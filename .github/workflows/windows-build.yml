@@ -58,8 +58,8 @@ jobs:
           $projectLine = Select-String -Path CMakeLists.txt -Pattern 'project\(ChromeBookmarkExplorer VERSION ([^ ]+)'
           $version = $projectLine.Matches[0].Groups[1].Value
           $shortSha = $env:GITHUB_SHA.Substring(0, 7)
-          $tag = "v$version-build.$env:GITHUB_RUN_NUMBER"
-          $title = "Chrome Bookmark Explorer v$version build $env:GITHUB_RUN_NUMBER"
+          $tag = "v$version"
+          $title = "Chrome Bookmark Explorer v$version"
           $notes = @"
           Automated Windows x64 build.
 
