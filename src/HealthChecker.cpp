@@ -1,6 +1,7 @@
 #include "HealthChecker.h"
 
 #include <QNetworkRequest>
+#include <QNetworkProxy>
 
 #include <algorithm>
 
@@ -24,6 +25,11 @@ void HealthChecker::check(QVector<BookmarkNode*> nodes)
     states_.clear();
     for (auto* node : nodes) {
         if (node != nullptr && node->isUrl() && !node->url().trimmed().isEmpty()) {
+            // 检查缓存
+            if (cacheEnabled_ && cache_.contains(node->url())) {
+                emit resultReady(node, cache_[node->url()]);
+                continue;
+            }
             pending_.enqueue(node);
         }
     }
@@ -55,6 +61,29 @@ void HealthChecker::setMaxConcurrent(int value)
     maxConcurrent_ = std::clamp(value, 1, 128);
 }
 
+void HealthChecker::setUserAgent(const QString& userAgent)
+{
+    userAgent_ = userAgent;
+}
+
+void HealthChecker::setProxy(const QString& host, int port, const QString& user, const QString& password)
+{
+    QNetworkProxy proxy;
+    proxy.setType(QNetworkProxy::HttpProxy);
+    proxy.setHostName(host);
+    proxy.setPort(port);
+    if (!user.isEmpty()) {
+        proxy.setUser(user);
+        proxy.setPassword(password);
+    }
+    manager_.setProxy(proxy);
+}
+
+void HealthChecker::clearProxy()
+{
+    manager_.setProxy(QNetworkProxy::NoProxy);
+}
+
 void HealthChecker::onReplyFinished(QNetworkReply* reply)
 {
     const auto state = states_.take(reply);
@@ -71,6 +100,12 @@ void HealthChecker::onReplyFinished(QNetworkReply* reply)
     if (!result.ok()) {
         ++failed_;
     }
+
+    // 缓存结果
+    if (cacheEnabled_ && state.node) {
+        cache_[state.node->url()] = result;
+    }
+
     emit resultReady(state.node, result);
     reply->deleteLater();
 
@@ -96,7 +131,7 @@ void HealthChecker::startRequest(BookmarkNode* node, bool fallbackGet)
     }
 
     QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ChromeBookmarkExplorer/0.1"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, userAgent_);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setTransferTimeout(8000);
     if (fallbackGet) {
