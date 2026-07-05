@@ -12,6 +12,7 @@ class QComboBox;
 class QLineEdit;
 class QPushButton;
 class QSplitter;
+class QTableWidgetItem;
 class QTableWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
