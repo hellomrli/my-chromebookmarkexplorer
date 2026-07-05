@@ -27,6 +27,8 @@ public:
     explicit HealthChecker(QObject* parent = nullptr);
     void check(QVector<BookmarkNode*> nodes);
     bool isRunning() const;
+    int maxConcurrent() const;
+    void setMaxConcurrent(int value);
 
 signals:
     void resultReady(BookmarkNode* node, const HealthResult& result);

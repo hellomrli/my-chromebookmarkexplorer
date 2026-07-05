@@ -15,6 +15,7 @@
 #include <QPushButton>
 #include <QSet>
 #include <QSplitter>
+#include <QSpinBox>
 #include <QStatusBar>
 #include <QTableWidget>
 #include <QToolBar>
@@ -289,10 +290,15 @@ void MainWindow::checkUrls()
     }
     healthTotal_ = nodes.size();
     healthCompleted_ = 0;
+    const int maxConcurrent = concurrencySpin_ == nullptr ? health_.maxConcurrent() : concurrencySpin_->value();
+    health_.setMaxConcurrent(maxConcurrent);
     showProgress(QStringLiteral("网址测活"), QStringLiteral("准备检测网址..."), healthTotal_);
-    updateProgress(QStringLiteral("已检测 0 / %1").arg(healthTotal_), 0);
+    updateProgress(QStringLiteral("已检测 0 / %1，并发 %2").arg(healthTotal_).arg(maxConcurrent), 0);
     checkButton_->setEnabled(false);
-    setStatus(QStringLiteral("开始测活：%1 个网址").arg(nodes.size()));
+    if (concurrencySpin_ != nullptr) {
+        concurrencySpin_->setEnabled(false);
+    }
+    setStatus(QStringLiteral("开始测活：%1 个网址，并发 %2").arg(nodes.size()).arg(maxConcurrent));
     health_.check(nodes);
 }
 
@@ -313,6 +319,9 @@ void MainWindow::onHealthResult(BookmarkNode* node, const HealthResult& result)
 void MainWindow::onHealthFinished(int total, int failed)
 {
     checkButton_->setEnabled(true);
+    if (concurrencySpin_ != nullptr) {
+        concurrencySpin_->setEnabled(true);
+    }
     updateProgress(QStringLiteral("测活完成：已检测 %1 个，异常 %2 个").arg(total).arg(failed), total);
     closeProgress();
     setStatus(QStringLiteral("测活完成：已检测 %1 个，异常 %2 个").arg(total).arg(failed));
@@ -346,6 +355,14 @@ void MainWindow::buildUi()
     includeSubfolders_ = new QCheckBox(QStringLiteral("含子文件夹"), this);
     includeSubfolders_->setChecked(true);
     toolbar->addWidget(includeSubfolders_);
+
+    toolbar->addWidget(new QLabel(QStringLiteral("并发数 ")));
+    concurrencySpin_ = new QSpinBox(this);
+    concurrencySpin_->setRange(1, 128);
+    concurrencySpin_->setValue(health_.maxConcurrent());
+    concurrencySpin_->setToolTip(QStringLiteral("同时测活的网址数量；数值越大速度越快，但也更容易触发站点限速"));
+    concurrencySpin_->setMaximumWidth(72);
+    toolbar->addWidget(concurrencySpin_);
 
     checkButton_ = new QPushButton(QStringLiteral("网址测活"), this);
     toolbar->addWidget(checkButton_);

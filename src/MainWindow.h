@@ -13,6 +13,7 @@ class QLineEdit;
 class QProgressDialog;
 class QPushButton;
 class QSplitter;
+class QSpinBox;
 class QTableWidgetItem;
 class QTableWidget;
 class QTreeWidget;
@@ -54,6 +55,7 @@ private:
     QTableWidget* itemTable_ = nullptr;
     QLineEdit* searchEdit_ = nullptr;
     QCheckBox* includeSubfolders_ = nullptr;
+    QSpinBox* concurrencySpin_ = nullptr;
     QPushButton* checkButton_ = nullptr;
     QProgressDialog* progressDialog_ = nullptr;
 

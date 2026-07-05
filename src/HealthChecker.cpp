@@ -2,6 +2,8 @@
 
 #include <QNetworkRequest>
 
+#include <algorithm>
+
 bool HealthResult::ok() const
 {
     return status == QStringLiteral("正常") || status == QStringLiteral("跳转");
@@ -38,6 +40,19 @@ void HealthChecker::check(QVector<BookmarkNode*> nodes)
 bool HealthChecker::isRunning() const
 {
     return running_;
+}
+
+int HealthChecker::maxConcurrent() const
+{
+    return maxConcurrent_;
+}
+
+void HealthChecker::setMaxConcurrent(int value)
+{
+    if (running_) {
+        return;
+    }
+    maxConcurrent_ = std::clamp(value, 1, 128);
 }
 
 void HealthChecker::onReplyFinished(QNetworkReply* reply)
