@@ -18,6 +18,8 @@ qt_add_executable(ChromeBookmarkExplorer WIN32
     src/ChromeProfiles.cpp
     src/HealthChecker.h
     src/HealthChecker.cpp
+    src/Updater.h
+    src/Updater.cpp
     src/MainWindow.h
     src/MainWindow.cpp
     resources/icons.qrc

@@ -3,6 +3,7 @@
 #include "BookmarkDocument.h"
 #include "ChromeProfiles.h"
 #include "HealthChecker.h"
+#include "Updater.h"
 
 #include <QHash>
 #include <QMainWindow>
@@ -50,6 +51,8 @@ private slots:
     void scanDuplicates();
     void deleteFailedUrls();
     void moveFailedUrls();
+    void checkForUpdates();
+    void onUpdateAvailable(const QString& version, const QString& url, const QString& notes);
     void onHealthResult(BookmarkNode* node, const HealthResult& result);
     void onHealthFinished(int total, int failed);
     void showTreeContextMenu(const QPoint& position);
@@ -59,6 +62,7 @@ private:
     BookmarkDocument document_;
     QVector<ChromeProfile> profiles_;
     HealthChecker health_;
+    Updater updater_;
     QHash<BookmarkNode*, HealthResult> healthResults_;
     bool startupLoading_ = true;
     int loadedProfileIndex_ = -1;

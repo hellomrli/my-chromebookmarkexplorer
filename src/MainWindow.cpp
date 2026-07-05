@@ -25,6 +25,7 @@
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QTableWidget>
+#include <QTimer>
 #include <QToolBar>
 #include <QTreeWidget>
 #include <QUrl>
@@ -74,7 +75,14 @@ MainWindow::MainWindow(QWidget* parent)
     buildUi();
     connect(&health_, &HealthChecker::resultReady, this, &MainWindow::onHealthResult);
     connect(&health_, &HealthChecker::finished, this, &MainWindow::onHealthFinished);
+    connect(&updater_, &Updater::updateAvailable, this, &MainWindow::onUpdateAvailable);
+    connect(&updater_, &Updater::checkFailed, this, [this](const QString& error) {
+        setStatus(QStringLiteral("检查更新失败: %1").arg(error));
+    });
     reloadProfiles();
+
+    // 启动时自动检查更新
+    QTimer::singleShot(2000, &updater_, &Updater::checkForUpdates);
 }
 
 void MainWindow::reloadProfiles()
@@ -623,6 +631,39 @@ void MainWindow::moveFailedUrls()
     setStatus(QStringLiteral("已移动 %1 个异常链接到：%2").arg(moved).arg(target->path()));
 }
 
+void MainWindow::checkForUpdates()
+{
+    setStatus(QStringLiteral("正在检查更新..."));
+    updater_.checkForUpdates();
+}
+
+void MainWindow::onUpdateAvailable(const QString& version, const QString& url, const QString& notes)
+{
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle(QStringLiteral("发现新版本"));
+    msgBox.setIcon(QMessageBox::Information);
+    msgBox.setText(QStringLiteral("发现新版本 v%1，当前版本 v%2")
+        .arg(version)
+        .arg(updater_.currentVersion().toString()));
+    msgBox.setInformativeText(QStringLiteral("是否打开下载页面？"));
+
+    // 显示更新说明（限制长度）
+    QString displayNotes = notes.left(500);
+    if (notes.length() > 500) {
+        displayNotes += QStringLiteral("\n...");
+    }
+    msgBox.setDetailedText(displayNotes);
+
+    msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+    msgBox.setDefaultButton(QMessageBox::Yes);
+
+    if (msgBox.exec() == QMessageBox::Yes) {
+        QDesktopServices::openUrl(QUrl(url));
+    }
+
+    setStatus(QStringLiteral("发现新版本: v%1").arg(version));
+}
+
 void MainWindow::onHealthResult(BookmarkNode* node, const HealthResult& result)
 {
     healthResults_.insert(node, result);
@@ -785,6 +826,8 @@ void MainWindow::buildUi()
     toolbar->addAction(style()->standardIcon(QStyle::SP_TrashIcon), QStringLiteral("删除"), this, &MainWindow::deleteSelected);
     toolbar->addAction(style()->standardIcon(QStyle::SP_ArrowRight), QStringLiteral("移动到"), this, &MainWindow::moveSelected);
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("查重"), this, &MainWindow::scanDuplicates);
+    toolbar->addSeparator();
+    toolbar->addAction(style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("检查更新"), this, &MainWindow::checkForUpdates);
 
     toolbar->addSeparator();
 
