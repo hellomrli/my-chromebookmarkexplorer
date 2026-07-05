@@ -39,6 +39,8 @@ private slots:
     void openBookmarksFile();
     void saveBookmarks();
     void saveBookmarksAs();
+    void exportBookmarks();
+    void importBookmarks();
     void refreshList();
     void newFolder();
     void newBookmark();

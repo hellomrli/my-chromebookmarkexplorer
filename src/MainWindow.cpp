@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "BatchEditDialog.h"
+#include "ImportExport.h"
 
 #include <QAction>
 #include <QApplication>
@@ -184,6 +185,99 @@ void MainWindow::saveBookmarks()
 void MainWindow::saveBookmarksAs()
 {
     saveBookmarksInternal(true);
+}
+
+void MainWindow::exportBookmarks()
+{
+    if (document_.roots().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("导出"), QStringLiteral("没有可导出的书签"));
+        return;
+    }
+
+    const QString filePath = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("导出书签"),
+        QStringLiteral("bookmarks"),
+        QStringLiteral("HTML 书签文件 (*.html);;JSON 文件 (*.json);;CSV 文件 (*.csv);;所有文件 (*.*)"));
+
+    if (filePath.isEmpty()) {
+        return;
+    }
+
+    QString error;
+    bool success = false;
+
+    if (filePath.endsWith(QStringLiteral(".html"), Qt::CaseInsensitive)) {
+        success = ImportExport::exportToHtml(document_.roots(), filePath, &error);
+    } else if (filePath.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive)) {
+        success = ImportExport::exportToJson(document_.roots(), filePath, &error);
+    } else if (filePath.endsWith(QStringLiteral(".csv"), Qt::CaseInsensitive)) {
+        success = ImportExport::exportToCsv(document_.roots(), filePath, &error);
+    } else {
+        error = QStringLiteral("不支持的文件格式");
+    }
+
+    if (success) {
+        QMessageBox::information(this, QStringLiteral("导出"), QStringLiteral("导出成功！"));
+        setStatus(QStringLiteral("已导出到：%1").arg(filePath));
+    } else {
+        QMessageBox::critical(this, QStringLiteral("导出失败"), error);
+    }
+}
+
+void MainWindow::importBookmarks()
+{
+    const QString filePath = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("导入书签"),
+        QString(),
+        QStringLiteral("HTML 书签文件 (*.html);;JSON 文件 (*.json);;所有文件 (*.*)"));
+
+    if (filePath.isEmpty()) {
+        return;
+    }
+
+    QVector<BookmarkNode*> importedRoots;
+    QString error;
+    bool success = false;
+
+    if (filePath.endsWith(QStringLiteral(".html"), Qt::CaseInsensitive)) {
+        success = ImportExport::importFromHtml(filePath, importedRoots, &error);
+    } else if (filePath.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive)) {
+        success = ImportExport::importFromJson(filePath, importedRoots, &error);
+    } else {
+        error = QStringLiteral("不支持的文件格式");
+    }
+
+    if (!success) {
+        QMessageBox::critical(this, QStringLiteral("导入失败"), error);
+        return;
+    }
+
+    // 将导入的节点添加到当前文档
+    auto* targetFolder = currentFolder();
+    if (!targetFolder) {
+        QMessageBox::warning(this, QStringLiteral("导入"), QStringLiteral("请先选择一个文件夹作为导入目标"));
+        for (auto* node : importedRoots) {
+            delete node;
+        }
+        return;
+    }
+
+    int imported = 0;
+    for (auto* root : importedRoots) {
+        for (auto& child : root->children) {
+            if (document_.add(child.get(), targetFolder, &error)) {
+                child.release(); // 转移所有权
+                ++imported;
+            }
+        }
+        delete root;
+    }
+
+    refreshTree(currentFolderPath());
+    QMessageBox::information(this, QStringLiteral("导入"), QStringLiteral("成功导入 %1 个项目").arg(imported));
+    setStatus(QStringLiteral("已导入 %1 个项目").arg(imported));
 }
 
 bool MainWindow::saveBookmarksInternal(bool forceChoosePath)
@@ -912,6 +1006,9 @@ void MainWindow::buildUi()
     auto* openAction = toolbar->addAction(style()->standardIcon(QStyle::SP_DialogOpenButton), QStringLiteral("打开文件"), this, &MainWindow::openBookmarksFile);
     auto* saveAction = toolbar->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), QStringLiteral("保存"), this, &MainWindow::saveBookmarks);
     toolbar->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), QStringLiteral("另存为"), this, &MainWindow::saveBookmarksAs);
+    toolbar->addSeparator();
+    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("导出"), this, &MainWindow::exportBookmarks);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("导入"), this, &MainWindow::importBookmarks);
 
     toolbar->addSeparator();
     auto* newFolderAction = toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogNewFolder), QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
