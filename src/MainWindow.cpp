@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "BatchEditDialog.h"
 #include "ImportExport.h"
+#include "Logger.h"
 
 #include <QAction>
 #include <QApplication>
@@ -10,6 +11,7 @@
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QHeaderView>
@@ -26,6 +28,7 @@
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QSpinBox>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QTableWidget>
 #include <QTimer>
@@ -75,11 +78,20 @@ QString normalizedUrlKey(const QString& input)
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
+    // 初始化日志系统
+    const QString logDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(logDir);
+    const QString logFile = logDir + QStringLiteral("/ChromeBookmarkExplorer.log");
+    Logger::instance().setLogFile(logFile);
+    Logger::instance().setLevel(Logger::Level::Info);
+    LOG_INFO(QStringLiteral("Application started"));
+
     buildUi();
     connect(&health_, &HealthChecker::resultReady, this, &MainWindow::onHealthResult);
     connect(&health_, &HealthChecker::finished, this, &MainWindow::onHealthFinished);
     connect(&updater_, &Updater::updateAvailable, this, &MainWindow::onUpdateAvailable);
     connect(&updater_, &Updater::checkFailed, this, [this](const QString& error) {
+        LOG_WARNING(QStringLiteral("Update check failed: %1").arg(error));
         setStatus(QStringLiteral("检查更新失败: %1").arg(error));
     });
     reloadProfiles();
@@ -140,6 +152,7 @@ void MainWindow::loadSelectedProfile()
     if (!document_.load(profiles_[index].bookmarksPath, &error)) {
         QSignalBlocker blocker(profileCombo_);
         profileCombo_->setCurrentIndex(loadedProfileIndex_);
+        LOG_ERROR(QStringLiteral("Failed to load profile: %1, error: %2").arg(profiles_[index].label(), error));
         QMessageBox::critical(this, QStringLiteral("打开失败"), error);
         return;
     }
@@ -164,6 +177,7 @@ void MainWindow::openBookmarksFile()
     }
     QString error;
     if (!document_.load(path, &error)) {
+        LOG_ERROR(QStringLiteral("Failed to open bookmarks file: %1, error: %2").arg(path, error));
         QMessageBox::critical(this, QStringLiteral("打开失败"), error);
         return;
     }
@@ -174,6 +188,7 @@ void MainWindow::openBookmarksFile()
     }
     healthResults_.clear();
     refreshTree();
+    LOG_INFO(QStringLiteral("Opened bookmarks file: %1").arg(path));
     setStatus(QStringLiteral("已打开：%1").arg(document_.path()));
 }
 
@@ -219,8 +234,10 @@ void MainWindow::exportBookmarks()
 
     if (success) {
         QMessageBox::information(this, QStringLiteral("导出"), QStringLiteral("导出成功！"));
+        LOG_INFO(QStringLiteral("Exported bookmarks to: %1").arg(filePath));
         setStatus(QStringLiteral("已导出到：%1").arg(filePath));
     } else {
+        LOG_ERROR(QStringLiteral("Failed to export bookmarks: %1").arg(error));
         QMessageBox::critical(this, QStringLiteral("导出失败"), error);
     }
 }
@@ -250,6 +267,7 @@ void MainWindow::importBookmarks()
     }
 
     if (!success) {
+        LOG_ERROR(QStringLiteral("Failed to import bookmarks: %1").arg(error));
         QMessageBox::critical(this, QStringLiteral("导入失败"), error);
         return;
     }
@@ -257,6 +275,7 @@ void MainWindow::importBookmarks()
     // 将导入的节点添加到当前文档
     auto* targetFolder = currentFolder();
     if (!targetFolder) {
+        LOG_WARNING(QStringLiteral("Import failed: no target folder selected"));
         QMessageBox::warning(this, QStringLiteral("导入"), QStringLiteral("请先选择一个文件夹作为导入目标"));
         for (auto* node : importedRoots) {
             delete node;
@@ -276,6 +295,7 @@ void MainWindow::importBookmarks()
     }
 
     refreshTree(currentFolderPath());
+    LOG_INFO(QStringLiteral("Imported %1 items from: %2").arg(imported).arg(filePath));
     QMessageBox::information(this, QStringLiteral("导入"), QStringLiteral("成功导入 %1 个项目").arg(imported));
     setStatus(QStringLiteral("已导入 %1 个项目").arg(imported));
 }
@@ -300,12 +320,14 @@ bool MainWindow::saveBookmarksInternal(bool forceChoosePath)
     updateProgress(QStringLiteral("正在备份并写入 Bookmarks 文件..."), 2);
     if (!document_.save(target, true, &error)) {
         closeProgress();
+        LOG_ERROR(QStringLiteral("Failed to save bookmarks to: %1, error: %2").arg(target, error));
         QMessageBox::critical(this, QStringLiteral("保存失败"), error);
         return false;
     }
     updateProgress(QStringLiteral("保存完成"), 3);
     closeProgress();
     updateDirtyState();
+    LOG_INFO(QStringLiteral("Saved bookmarks to: %1").arg(target));
     setStatus(QStringLiteral("已保存并自动备份：%1").arg(target));
     return true;
 }

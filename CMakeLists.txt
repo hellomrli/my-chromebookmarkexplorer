@@ -24,6 +24,8 @@ qt_add_executable(ChromeBookmarkExplorer WIN32
     src/BatchEditDialog.cpp
     src/ImportExport.h
     src/ImportExport.cpp
+    src/Logger.h
+    src/Logger.cpp
     src/MainWindow.h
     src/MainWindow.cpp
     resources/icons.qrc
