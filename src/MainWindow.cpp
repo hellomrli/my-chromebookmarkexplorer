@@ -1,14 +1,17 @@
 #include "MainWindow.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDesktopServices>
+#include <QEventLoop>
 #include <QFileDialog>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QSet>
 #include <QSplitter>
@@ -40,6 +43,12 @@ MainWindow::MainWindow(QWidget* parent)
 
 void MainWindow::reloadProfiles()
 {
+    const bool showDialog = !startupLoading_;
+    if (showDialog) {
+        showProgress(QStringLiteral("刷新"), QStringLiteral("正在扫描 Chrome Profile..."), 2);
+        updateProgress(QStringLiteral("正在扫描 Chrome Profile..."), 1);
+    }
+
     profiles_ = discoverChromeProfiles();
     profileCombo_->clear();
     for (const auto& profile : profiles_) {
@@ -48,6 +57,16 @@ void MainWindow::reloadProfiles()
     setStatus(profiles_.isEmpty()
         ? QStringLiteral("未发现 Chrome Profile，可手动打开 Bookmarks 文件")
         : QStringLiteral("发现 %1 个 Chrome Profile").arg(profiles_.size()));
+
+    if (showDialog) {
+        updateProgress(
+            profiles_.isEmpty()
+                ? QStringLiteral("未发现 Chrome Profile")
+                : QStringLiteral("已发现 %1 个 Chrome Profile").arg(profiles_.size()),
+            2);
+        closeProgress();
+    }
+    startupLoading_ = false;
 }
 
 void MainWindow::loadSelectedProfile()
@@ -95,11 +114,18 @@ void MainWindow::saveBookmarks()
             return;
         }
     }
+
+    showProgress(QStringLiteral("保存"), QStringLiteral("准备保存收藏夹..."), 3);
+    updateProgress(QStringLiteral("正在检查 Chrome 状态..."), 1);
     QString error;
+    updateProgress(QStringLiteral("正在备份并写入 Bookmarks 文件..."), 2);
     if (!document_.save(target, true, &error)) {
+        closeProgress();
         QMessageBox::critical(this, QStringLiteral("保存失败"), error);
         return;
     }
+    updateProgress(QStringLiteral("保存完成"), 3);
+    closeProgress();
     setStatus(QStringLiteral("已保存并自动备份：%1").arg(target));
 }
 
@@ -261,6 +287,10 @@ void MainWindow::checkUrls()
         setStatus(QStringLiteral("当前范围没有书签网址"));
         return;
     }
+    healthTotal_ = nodes.size();
+    healthCompleted_ = 0;
+    showProgress(QStringLiteral("网址测活"), QStringLiteral("准备检测网址..."), healthTotal_);
+    updateProgress(QStringLiteral("已检测 0 / %1").arg(healthTotal_), 0);
     checkButton_->setEnabled(false);
     setStatus(QStringLiteral("开始测活：%1 个网址").arg(nodes.size()));
     health_.check(nodes);
@@ -269,12 +299,22 @@ void MainWindow::checkUrls()
 void MainWindow::onHealthResult(BookmarkNode* node, const HealthResult& result)
 {
     healthResults_.insert(node, result);
+    ++healthCompleted_;
+    const QString currentName = node == nullptr ? result.url : node->name();
+    updateProgress(
+        QStringLiteral("正在检测网址... %1 / %2\n%3")
+            .arg(healthCompleted_)
+            .arg(healthTotal_)
+            .arg(currentName),
+        healthCompleted_);
     refreshList();
 }
 
 void MainWindow::onHealthFinished(int total, int failed)
 {
     checkButton_->setEnabled(true);
+    updateProgress(QStringLiteral("测活完成：已检测 %1 个，异常 %2 个").arg(total).arg(failed), total);
+    closeProgress();
     setStatus(QStringLiteral("测活完成：已检测 %1 个，异常 %2 个").arg(total).arg(failed));
 }
 
@@ -436,6 +476,40 @@ BookmarkNode* MainWindow::chooseFolder()
 void MainWindow::setStatus(const QString& text)
 {
     statusBar()->showMessage(text);
+}
+
+void MainWindow::showProgress(const QString& title, const QString& label, int maximum)
+{
+    closeProgress();
+    progressDialog_ = new QProgressDialog(label, QString(), 0, maximum, this);
+    progressDialog_->setWindowTitle(title);
+    progressDialog_->setCancelButton(nullptr);
+    progressDialog_->setWindowModality(Qt::ApplicationModal);
+    progressDialog_->setMinimumDuration(0);
+    progressDialog_->setValue(0);
+    progressDialog_->show();
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+void MainWindow::updateProgress(const QString& label, int value)
+{
+    if (progressDialog_ == nullptr) {
+        return;
+    }
+    progressDialog_->setLabelText(label);
+    progressDialog_->setValue(value);
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+void MainWindow::closeProgress()
+{
+    if (progressDialog_ == nullptr) {
+        return;
+    }
+    progressDialog_->close();
+    progressDialog_->deleteLater();
+    progressDialog_ = nullptr;
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
 BookmarkNode* MainWindow::nodeFromItem(QTreeWidgetItem* item)

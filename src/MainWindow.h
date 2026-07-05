@@ -10,6 +10,7 @@
 class QCheckBox;
 class QComboBox;
 class QLineEdit;
+class QProgressDialog;
 class QPushButton;
 class QSplitter;
 class QTableWidgetItem;
@@ -44,6 +45,9 @@ private:
     QVector<ChromeProfile> profiles_;
     HealthChecker health_;
     QHash<BookmarkNode*, HealthResult> healthResults_;
+    bool startupLoading_ = true;
+    int healthTotal_ = 0;
+    int healthCompleted_ = 0;
 
     QComboBox* profileCombo_ = nullptr;
     QTreeWidget* folderTree_ = nullptr;
@@ -51,6 +55,7 @@ private:
     QLineEdit* searchEdit_ = nullptr;
     QCheckBox* includeSubfolders_ = nullptr;
     QPushButton* checkButton_ = nullptr;
+    QProgressDialog* progressDialog_ = nullptr;
 
     void buildUi();
     void refreshTree();
@@ -61,6 +66,9 @@ private:
     QVector<BookmarkNode*> collectFolders() const;
     BookmarkNode* chooseFolder();
     void setStatus(const QString& text);
+    void showProgress(const QString& title, const QString& label, int maximum);
+    void updateProgress(const QString& label, int value);
+    void closeProgress();
     static BookmarkNode* nodeFromItem(QTreeWidgetItem* item);
     static BookmarkNode* nodeFromTableItem(QTableWidgetItem* item);
     static void setNodeData(QTreeWidgetItem* item, BookmarkNode* node);
