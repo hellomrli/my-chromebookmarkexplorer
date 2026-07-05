@@ -13,6 +13,7 @@ public:
     QString rootKey;
     BookmarkNode* parent = nullptr;
     std::vector<std::unique_ptr<BookmarkNode>> children;
+    QStringList tags; // 新增：标签列表
 
     BookmarkNode() = default;
     BookmarkNode(QJsonObject object, QString root, BookmarkNode* parentNode);
@@ -33,6 +34,12 @@ public:
     void setName(const QString& value);
     void setUrl(const QString& value);
     void touch();
+
+    // 标签相关
+    void addTag(const QString& tag);
+    void removeTag(const QString& tag);
+    bool hasTag(const QString& tag) const;
+    QString tagsString() const;
 
     QJsonObject toJson() const;
 };

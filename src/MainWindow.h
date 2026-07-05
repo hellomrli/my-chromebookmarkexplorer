@@ -47,6 +47,7 @@ private slots:
     void renameSelected();
     void editSelectedUrl();
     void batchEditUrls();
+    void editTags();
     void deleteSelected();
     void moveSelected();
     void openSelectedUrl();

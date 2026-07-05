@@ -95,6 +95,28 @@ void BookmarkNode::touch()
     }
 }
 
+void BookmarkNode::addTag(const QString& tag)
+{
+    if (!tag.isEmpty() && !tags.contains(tag)) {
+        tags.append(tag);
+    }
+}
+
+void BookmarkNode::removeTag(const QString& tag)
+{
+    tags.removeAll(tag);
+}
+
+bool BookmarkNode::hasTag(const QString& tag) const
+{
+    return tags.contains(tag);
+}
+
+QString BookmarkNode::tagsString() const
+{
+    return tags.join(QStringLiteral(", "));
+}
+
 QJsonObject BookmarkNode::toJson() const
 {
     QJsonObject object = raw;

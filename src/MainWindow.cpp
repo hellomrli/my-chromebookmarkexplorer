@@ -2,6 +2,7 @@
 #include "BatchEditDialog.h"
 #include "ImportExport.h"
 #include "Logger.h"
+#include "TagDialog.h"
 
 #include <QAction>
 #include <QApplication>
@@ -366,12 +367,13 @@ void MainWindow::refreshList()
 
         itemTable_->setItem(row, 2, new QTableWidgetItem(node->displayType()));
         itemTable_->setItem(row, 3, new QTableWidgetItem(node->url()));
+        itemTable_->setItem(row, 4, new QTableWidgetItem(node->tagsString()));
 
         const auto result = healthResults_.value(node);
-        itemTable_->setItem(row, 4, new QTableWidgetItem(result.status));
-        itemTable_->setItem(row, 5, new QTableWidgetItem(codeText(result.code)));
-        itemTable_->setItem(row, 6, new QTableWidgetItem(result.elapsedMs > 0 ? QStringLiteral("%1 ms").arg(result.elapsedMs) : QString()));
-        itemTable_->setItem(row, 7, new QTableWidgetItem(node->formattedDateAdded()));
+        itemTable_->setItem(row, 5, new QTableWidgetItem(result.status));
+        itemTable_->setItem(row, 6, new QTableWidgetItem(codeText(result.code)));
+        itemTable_->setItem(row, 7, new QTableWidgetItem(result.elapsedMs > 0 ? QStringLiteral("%1 ms").arg(result.elapsedMs) : QString()));
+        itemTable_->setItem(row, 8, new QTableWidgetItem(node->formattedDateAdded()));
         ++row;
     }
     setStatus(QStringLiteral("%1：%2 项").arg(folder->path()).arg(folder->children.size()));
@@ -548,6 +550,48 @@ void MainWindow::batchEditUrls()
     } else {
         QMessageBox::information(this, QStringLiteral("批量编辑"), QStringLiteral("没有找到匹配的网址"));
     }
+}
+
+void MainWindow::editTags()
+{
+    auto nodes = selectedListNodes();
+    if (nodes.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("编辑标签"), QStringLiteral("请先选择要编辑标签的书签"));
+        return;
+    }
+
+    // 只保留书签（URL 节点）
+    QVector<BookmarkNode*> urlNodes;
+    for (auto* node : nodes) {
+        if (node->isUrl()) {
+            urlNodes.push_back(node);
+        }
+    }
+
+    if (urlNodes.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("编辑标签"), QStringLiteral("选中的项目中没有书签"));
+        return;
+    }
+
+    // 如果选中多个书签，使用第一个的标签作为初始值
+    QStringList currentTags = urlNodes[0]->tags;
+
+    TagDialog dialog(currentTags, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const QStringList newTags = dialog.tags();
+
+    // 为所有选中的书签设置标签
+    for (auto* node : urlNodes) {
+        node->tags = newTags;
+    }
+
+    document_.setDirty();
+    refreshList();
+    LOG_INFO(QStringLiteral("Updated tags for %1 bookmarks").arg(urlNodes.size()));
+    setStatus(QStringLiteral("已更新 %1 个书签的标签").arg(urlNodes.size()));
 }
 
 void MainWindow::deleteSelected()
@@ -990,12 +1034,14 @@ void MainWindow::showTableContextMenu(const QPoint& position)
     auto* renameAction = menu.addAction(QStringLiteral("重命名"), this, &MainWindow::renameSelected);
     auto* editUrlAction = menu.addAction(QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
     auto* batchEditAction = menu.addAction(QStringLiteral("批量编辑网址"), this, &MainWindow::batchEditUrls);
+    auto* tagsAction = menu.addAction(QStringLiteral("编辑标签"), this, &MainWindow::editTags);
     auto* deleteAction = menu.addAction(QStringLiteral("删除"), this, &MainWindow::deleteSelected);
     auto* moveAction = menu.addAction(QStringLiteral("移动到"), this, &MainWindow::moveSelected);
     const bool hasOperationNodes = !selectedOperationNodes().isEmpty();
     renameAction->setEnabled(selectedOperationNodes().size() <= 1);
     editUrlAction->setEnabled(nodes.size() == 1 && nodes[0]->isUrl());
     batchEditAction->setEnabled(!nodes.isEmpty());
+    tagsAction->setEnabled(!nodes.isEmpty());
     deleteAction->setEnabled(hasOperationNodes || currentFolder() != nullptr);
     moveAction->setEnabled(hasOperationNodes);
     menu.addSeparator();
@@ -1038,6 +1084,7 @@ void MainWindow::buildUi()
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("重命名"), this, &MainWindow::renameSelected);
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("批量编辑"), this, &MainWindow::batchEditUrls);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("编辑标签"), this, &MainWindow::editTags);
     toolbar->addAction(style()->standardIcon(QStyle::SP_TrashIcon), QStringLiteral("删除"), this, &MainWindow::deleteSelected);
     toolbar->addAction(style()->standardIcon(QStyle::SP_ArrowRight), QStringLiteral("移动到"), this, &MainWindow::moveSelected);
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("查重"), this, &MainWindow::scanDuplicates);
@@ -1086,8 +1133,8 @@ void MainWindow::buildUi()
     connect(folderTree_, &QTreeWidget::customContextMenuRequested, this, &MainWindow::showTreeContextMenu);
 
     itemTable_ = new QTableWidget(splitter);
-    itemTable_->setColumnCount(8);
-    itemTable_->setHorizontalHeaderLabels({QStringLiteral(""), QStringLiteral("名称"), QStringLiteral("类型"), QStringLiteral("网址"), QStringLiteral("测活"), QStringLiteral("状态码"), QStringLiteral("耗时"), QStringLiteral("添加时间")});
+    itemTable_->setColumnCount(9);
+    itemTable_->setHorizontalHeaderLabels({QStringLiteral(""), QStringLiteral("名称"), QStringLiteral("类型"), QStringLiteral("网址"), QStringLiteral("标签"), QStringLiteral("测活"), QStringLiteral("状态码"), QStringLiteral("耗时"), QStringLiteral("添加时间")});
     itemTable_->horizontalHeader()->setStretchLastSection(false);
     itemTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
     itemTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
