@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -10,7 +11,9 @@
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
+#include <QPoint>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QSet>
@@ -177,7 +180,7 @@ void MainWindow::newFolder()
         return;
     }
     document_.addFolder(folder, name.trimmed());
-    refreshTree();
+    refreshTree(folder->path());
 }
 
 void MainWindow::newBookmark()
@@ -196,16 +199,21 @@ void MainWindow::newBookmark()
         return;
     }
     document_.addBookmark(folder, name.trimmed(), url.trimmed());
-    refreshTree();
+    refreshTree(folder->path());
 }
 
 void MainWindow::renameSelected()
 {
-    auto nodes = selectedListNodes();
+    auto nodes = selectedOperationNodes();
+    if (nodes.size() > 1) {
+        QMessageBox::information(this, QStringLiteral("重命名"), QStringLiteral("重命名只支持单个项目"));
+        return;
+    }
     BookmarkNode* node = nodes.size() == 1 ? nodes[0] : currentFolder();
     if (node == nullptr) {
         return;
     }
+    const QString fallbackPath = currentFolderPath();
     bool ok = false;
     const QString name = QInputDialog::getText(this, QStringLiteral("重命名"), QStringLiteral("新名称："), QLineEdit::Normal, node->name(), &ok);
     if (!ok || name.trimmed().isEmpty()) {
@@ -216,24 +224,26 @@ void MainWindow::renameSelected()
         QMessageBox::warning(this, QStringLiteral("重命名失败"), error);
         return;
     }
-    refreshTree();
+    refreshTree(node->isFolder() ? node->path() : fallbackPath);
 }
 
 void MainWindow::deleteSelected()
 {
-    auto nodes = selectedListNodes();
+    auto nodes = selectedOperationNodes();
     if (nodes.isEmpty()) {
         auto* folder = currentFolder();
         if (folder != nullptr) {
             nodes.push_back(folder);
         }
     }
+    nodes = filterNestedNodes(nodes);
     if (nodes.isEmpty()) {
         return;
     }
     if (QMessageBox::question(this, QStringLiteral("删除"), QStringLiteral("确认删除 %1 个项目？").arg(nodes.size())) != QMessageBox::Yes) {
         return;
     }
+    const QString previousPath = currentFolderPath();
     QString error;
     for (auto* node : nodes) {
         if (!document_.remove(node, &error)) {
@@ -241,20 +251,21 @@ void MainWindow::deleteSelected()
             break;
         }
     }
-    refreshTree();
+    refreshTree(nearestExistingFolderPath(previousPath));
 }
 
 void MainWindow::moveSelected()
 {
-    const auto nodes = selectedListNodes();
+    const auto nodes = filterNestedNodes(selectedOperationNodes());
     if (nodes.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("移动"), QStringLiteral("请在右侧列表选择要移动的项目"));
+        QMessageBox::information(this, QStringLiteral("移动"), QStringLiteral("请在右侧列表选择项目，或在左侧勾选文件夹"));
         return;
     }
     auto* target = chooseFolder();
     if (target == nullptr) {
         return;
     }
+    const QString previousPath = currentFolderPath();
     QString error;
     for (auto* node : nodes) {
         if (!document_.move(node, target, &error)) {
@@ -262,7 +273,7 @@ void MainWindow::moveSelected()
             break;
         }
     }
-    refreshTree();
+    refreshTree(nearestExistingFolderPath(previousPath));
 }
 
 void MainWindow::openSelectedUrl()
@@ -327,6 +338,81 @@ void MainWindow::onHealthFinished(int total, int failed)
     setStatus(QStringLiteral("测活完成：已检测 %1 个，异常 %2 个").arg(total).arg(failed));
 }
 
+void MainWindow::showTreeContextMenu(const QPoint& position)
+{
+    auto* item = folderTree_->itemAt(position);
+    if (item != nullptr) {
+        folderTree_->setCurrentItem(item);
+    }
+    auto* folder = currentFolder();
+    if (folder == nullptr) {
+        return;
+    }
+
+    QMenu menu(this);
+    menu.addAction(QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
+    menu.addAction(QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
+    menu.addSeparator();
+
+    auto* renameAction = menu.addAction(QStringLiteral("重命名"), this, &MainWindow::renameSelected);
+    auto* deleteAction = menu.addAction(QStringLiteral("删除"), this, &MainWindow::deleteSelected);
+    auto* moveAction = menu.addAction(QStringLiteral("移动到"), this, &MainWindow::moveSelected);
+    renameAction->setEnabled(!folder->isRoot() || selectedOperationNodes().size() == 1);
+    deleteAction->setEnabled(!folder->isRoot() || !selectedOperationNodes().isEmpty());
+    moveAction->setEnabled(!folder->isRoot() || !selectedOperationNodes().isEmpty());
+
+    if (item != nullptr && (item->flags() & Qt::ItemIsUserCheckable)) {
+        menu.addSeparator();
+        const bool checked = item->checkState(0) == Qt::Checked;
+        auto* checkAction = menu.addAction(checked ? QStringLiteral("取消勾选") : QStringLiteral("勾选"));
+        connect(checkAction, &QAction::triggered, this, [item, checked]() {
+            item->setCheckState(0, checked ? Qt::Unchecked : Qt::Checked);
+        });
+    }
+
+    menu.exec(folderTree_->viewport()->mapToGlobal(position));
+}
+
+void MainWindow::showTableContextMenu(const QPoint& position)
+{
+    auto* item = itemTable_->itemAt(position);
+    if (item != nullptr) {
+        bool rowAlreadySelected = false;
+        const int row = item->row();
+        const auto ranges = itemTable_->selectedRanges();
+        for (const auto& range : ranges) {
+            if (row >= range.topRow() && row <= range.bottomRow()) {
+                rowAlreadySelected = true;
+                break;
+            }
+        }
+        if (!rowAlreadySelected) {
+            itemTable_->clearSelection();
+            itemTable_->selectRow(row);
+        }
+    }
+
+    QMenu menu(this);
+    const auto nodes = selectedListNodes();
+    auto* openAction = menu.addAction(QStringLiteral("打开网址"), this, &MainWindow::openSelectedUrl);
+    openAction->setEnabled(nodes.size() == 1 && nodes[0]->isUrl());
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
+    menu.addAction(QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
+    menu.addSeparator();
+    auto* renameAction = menu.addAction(QStringLiteral("重命名"), this, &MainWindow::renameSelected);
+    auto* deleteAction = menu.addAction(QStringLiteral("删除"), this, &MainWindow::deleteSelected);
+    auto* moveAction = menu.addAction(QStringLiteral("移动到"), this, &MainWindow::moveSelected);
+    const bool hasOperationNodes = !selectedOperationNodes().isEmpty();
+    renameAction->setEnabled(selectedOperationNodes().size() <= 1);
+    deleteAction->setEnabled(hasOperationNodes || currentFolder() != nullptr);
+    moveAction->setEnabled(hasOperationNodes);
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("网址测活"), this, &MainWindow::checkUrls);
+
+    menu.exec(itemTable_->viewport()->mapToGlobal(position));
+}
+
 void MainWindow::buildUi()
 {
     setWindowTitle(QStringLiteral("Chrome Bookmark Explorer"));
@@ -379,7 +465,9 @@ void MainWindow::buildUi()
     folderTree_ = new QTreeWidget(splitter);
     folderTree_->setHeaderHidden(true);
     folderTree_->setMinimumWidth(260);
+    folderTree_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(folderTree_, &QTreeWidget::itemSelectionChanged, this, &MainWindow::refreshList);
+    connect(folderTree_, &QTreeWidget::customContextMenuRequested, this, &MainWindow::showTreeContextMenu);
 
     itemTable_ = new QTableWidget(splitter);
     itemTable_->setColumnCount(7);
@@ -390,7 +478,9 @@ void MainWindow::buildUi()
     itemTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     itemTable_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     itemTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    itemTable_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(itemTable_, &QTableWidget::cellDoubleClicked, this, &MainWindow::openSelectedUrl);
+    connect(itemTable_, &QTableWidget::customContextMenuRequested, this, &MainWindow::showTableContextMenu);
 
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 4);
@@ -398,16 +488,36 @@ void MainWindow::buildUi()
     statusBar();
 }
 
-void MainWindow::refreshTree()
+void MainWindow::refreshTree(const QString& preferredPath)
 {
+    QString selectedPath = preferredPath.isEmpty() ? currentFolderPath() : preferredPath;
+    const QStringList checkedPaths = checkedFolderPaths();
+
     folderTree_->clear();
     for (const auto& root : document_.roots()) {
         addFolderItem(nullptr, root.get());
     }
-    if (folderTree_->topLevelItemCount() > 0) {
-        auto* first = folderTree_->topLevelItem(0);
-        first->setExpanded(true);
-        folderTree_->setCurrentItem(first);
+
+    restoreCheckedFolders(checkedPaths);
+
+    QTreeWidgetItem* selectedItem = nullptr;
+    while (selectedItem == nullptr && !selectedPath.isEmpty()) {
+        selectedItem = findFolderItemByPath(selectedPath);
+        if (selectedItem == nullptr) {
+            const int slash = selectedPath.lastIndexOf('/');
+            selectedPath = slash > 0 ? selectedPath.left(slash) : QString();
+        }
+    }
+
+    if (selectedItem == nullptr && folderTree_->topLevelItemCount() > 0) {
+        selectedItem = folderTree_->topLevelItem(0);
+    }
+    if (selectedItem != nullptr) {
+        for (auto* parent = selectedItem->parent(); parent != nullptr; parent = parent->parent()) {
+            parent->setExpanded(true);
+        }
+        selectedItem->setExpanded(true);
+        folderTree_->setCurrentItem(selectedItem);
     }
     refreshList();
 }
@@ -416,6 +526,10 @@ void MainWindow::addFolderItem(QTreeWidgetItem* parentItem, BookmarkNode* node)
 {
     auto* item = parentItem == nullptr ? new QTreeWidgetItem(folderTree_) : new QTreeWidgetItem(parentItem);
     item->setText(0, node->name());
+    if (!node->isRoot()) {
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(0, Qt::Unchecked);
+    }
     setNodeData(item, node);
     for (const auto& child : node->children) {
         if (child->isFolder()) {
@@ -447,6 +561,33 @@ QVector<BookmarkNode*> MainWindow::selectedListNodes() const
         }
     }
     return nodes;
+}
+
+QVector<BookmarkNode*> MainWindow::checkedFolderNodes() const
+{
+    QVector<BookmarkNode*> nodes;
+    for (int i = 0; i < folderTree_->topLevelItemCount(); ++i) {
+        collectCheckedFolderNodes(folderTree_->topLevelItem(i), &nodes);
+    }
+    return filterNestedNodes(nodes);
+}
+
+QVector<BookmarkNode*> MainWindow::selectedOperationNodes() const
+{
+    QVector<BookmarkNode*> nodes;
+    QSet<BookmarkNode*> seen;
+    const auto appendUnique = [&nodes, &seen](const QVector<BookmarkNode*>& source) {
+        for (auto* node : source) {
+            if (node != nullptr && !seen.contains(node)) {
+                seen.insert(node);
+                nodes.push_back(node);
+            }
+        }
+    };
+
+    appendUnique(selectedListNodes());
+    appendUnique(checkedFolderNodes());
+    return filterNestedNodes(nodes);
 }
 
 QVector<BookmarkNode*> MainWindow::collectUrlNodes(BookmarkNode* folder, bool recursive) const
@@ -488,6 +629,139 @@ BookmarkNode* MainWindow::chooseFolder()
     }
     const int index = labels.indexOf(selected);
     return index >= 0 ? folders[index] : nullptr;
+}
+
+QString MainWindow::currentFolderPath() const
+{
+    auto* folder = currentFolder();
+    return folder == nullptr ? QString() : folder->path();
+}
+
+QString MainWindow::nearestExistingFolderPath(QString path) const
+{
+    while (!path.isEmpty()) {
+        for (auto* folder : document_.folders()) {
+            if (folder != nullptr && folder->path() == path) {
+                return path;
+            }
+        }
+        const int slash = path.lastIndexOf('/');
+        path = slash > 0 ? path.left(slash) : QString();
+    }
+    return {};
+}
+
+QStringList MainWindow::checkedFolderPaths() const
+{
+    QStringList paths;
+    for (int i = 0; i < folderTree_->topLevelItemCount(); ++i) {
+        collectCheckedFolderPaths(folderTree_->topLevelItem(i), &paths);
+    }
+    return paths;
+}
+
+void MainWindow::restoreCheckedFolders(const QStringList& paths)
+{
+    QSet<QString> pathSet;
+    for (const auto& path : paths) {
+        pathSet.insert(path);
+    }
+    for (const auto& path : pathSet) {
+        if (auto* item = findFolderItemByPath(path)) {
+            if (item->flags() & Qt::ItemIsUserCheckable) {
+                item->setCheckState(0, Qt::Checked);
+            }
+        }
+    }
+}
+
+void MainWindow::collectCheckedFolderNodes(QTreeWidgetItem* item, QVector<BookmarkNode*>* nodes) const
+{
+    if (item == nullptr || nodes == nullptr) {
+        return;
+    }
+    if ((item->flags() & Qt::ItemIsUserCheckable) && item->checkState(0) == Qt::Checked) {
+        if (auto* node = nodeFromItem(item)) {
+            nodes->push_back(node);
+        }
+    }
+    for (int i = 0; i < item->childCount(); ++i) {
+        collectCheckedFolderNodes(item->child(i), nodes);
+    }
+}
+
+void MainWindow::collectCheckedFolderPaths(QTreeWidgetItem* item, QStringList* paths) const
+{
+    if (item == nullptr || paths == nullptr) {
+        return;
+    }
+    if ((item->flags() & Qt::ItemIsUserCheckable) && item->checkState(0) == Qt::Checked) {
+        if (auto* node = nodeFromItem(item)) {
+            paths->append(node->path());
+        }
+    }
+    for (int i = 0; i < item->childCount(); ++i) {
+        collectCheckedFolderPaths(item->child(i), paths);
+    }
+}
+
+QVector<BookmarkNode*> MainWindow::filterNestedNodes(const QVector<BookmarkNode*>& nodes) const
+{
+    QVector<BookmarkNode*> result;
+    QSet<BookmarkNode*> candidates;
+    for (auto* node : nodes) {
+        if (node != nullptr) {
+            candidates.insert(node);
+        }
+    }
+    QSet<BookmarkNode*> added;
+    for (auto* node : nodes) {
+        if (node != nullptr && !added.contains(node) && !isDescendantOfAny(node, candidates)) {
+            added.insert(node);
+            result.push_back(node);
+        }
+    }
+    return result;
+}
+
+QTreeWidgetItem* MainWindow::findFolderItemByPath(const QString& path) const
+{
+    if (path.isEmpty()) {
+        return nullptr;
+    }
+    for (int i = 0; i < folderTree_->topLevelItemCount(); ++i) {
+        if (auto* item = findFolderItemRecursive(folderTree_->topLevelItem(i), path)) {
+            return item;
+        }
+    }
+    return nullptr;
+}
+
+QTreeWidgetItem* MainWindow::findFolderItemRecursive(QTreeWidgetItem* item, const QString& path) const
+{
+    if (item == nullptr) {
+        return nullptr;
+    }
+    auto* node = nodeFromItem(item);
+    if (node != nullptr && node->path() == path) {
+        return item;
+    }
+    for (int i = 0; i < item->childCount(); ++i) {
+        if (auto* match = findFolderItemRecursive(item->child(i), path)) {
+            return match;
+        }
+    }
+    return nullptr;
+}
+
+bool MainWindow::isDescendantOfAny(BookmarkNode* node, const QSet<BookmarkNode*>& candidates) const
+{
+    for (auto* parent = node == nullptr ? nullptr : node->parent; parent != nullptr; parent = parent->parent) {
+        if (candidates.contains(parent)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void MainWindow::setStatus(const QString& text)
