@@ -205,7 +205,7 @@ void MainWindow::saveBookmarksAs()
 
 void MainWindow::exportBookmarks()
 {
-    if (document_.roots().isEmpty()) {
+    if (document_.roots().empty()) {
         QMessageBox::information(this, QStringLiteral("导出"), QStringLiteral("没有可导出的书签"));
         return;
     }
