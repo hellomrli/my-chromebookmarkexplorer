@@ -168,6 +168,40 @@ BookmarkNode* BookmarkDocument::addBookmark(BookmarkNode* parent, const QString&
     return ptr;
 }
 
+bool BookmarkDocument::add(BookmarkNode* source, BookmarkNode* parent, QString* error)
+{
+    if (source == nullptr) {
+        if (error) *error = QStringLiteral("没有要添加的项目");
+        return false;
+    }
+    if (parent == nullptr || !parent->isFolder()) {
+        if (error) *error = QStringLiteral("目标必须是文件夹");
+        return false;
+    }
+
+    int idCounter = maxNumericId();
+    const auto cloneObject = [&idCounter](BookmarkNode* node, const auto& self) -> QJsonObject {
+        QJsonObject object = node->toJson();
+        object.insert(QStringLiteral("id"), QString::number(++idCounter));
+        object.insert(QStringLiteral("guid"), QUuid::createUuid().toString(QUuid::WithoutBraces));
+
+        if (node->isFolder()) {
+            QJsonArray children;
+            for (const auto& child : node->children) {
+                children.append(self(child.get(), self));
+            }
+            object.insert(QStringLiteral("children"), children);
+        }
+        return object;
+    };
+
+    auto child = std::make_unique<BookmarkNode>(cloneObject(source, cloneObject), parent->rootKey, parent);
+    parent->children.push_back(std::move(child));
+    parent->touch();
+    dirty_ = true;
+    return true;
+}
+
 bool BookmarkDocument::rename(BookmarkNode* node, const QString& name, QString* error)
 {
     if (node == nullptr || node->isRoot()) {

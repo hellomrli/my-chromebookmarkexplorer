@@ -3,14 +3,18 @@
 #include <QString>
 #include <QVector>
 
+#include <memory>
+#include <vector>
+
 class BookmarkNode;
+class QTextStream;
 
 class ImportExport {
 public:
     // 导出
-    static bool exportToHtml(const QVector<BookmarkNode*>& roots, const QString& filePath, QString* error);
-    static bool exportToJson(const QVector<BookmarkNode*>& roots, const QString& filePath, QString* error);
-    static bool exportToCsv(const QVector<BookmarkNode*>& roots, const QString& filePath, QString* error);
+    static bool exportToHtml(const std::vector<std::unique_ptr<BookmarkNode>>& roots, const QString& filePath, QString* error);
+    static bool exportToJson(const std::vector<std::unique_ptr<BookmarkNode>>& roots, const QString& filePath, QString* error);
+    static bool exportToCsv(const std::vector<std::unique_ptr<BookmarkNode>>& roots, const QString& filePath, QString* error);
 
     // 导入
     static bool importFromHtml(const QString& filePath, QVector<BookmarkNode*>& roots, QString* error);

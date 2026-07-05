@@ -288,7 +288,6 @@ void MainWindow::importBookmarks()
     for (auto* root : importedRoots) {
         for (auto& child : root->children) {
             if (document_.add(child.get(), targetFolder, &error)) {
-                child.release(); // 转移所有权
                 ++imported;
             }
         }
@@ -522,7 +521,8 @@ void MainWindow::batchEditUrls()
 
         for (auto* node : urlNodes) {
             const QString oldUrl = node->url();
-            const QString newUrl = oldUrl.replace(regex, replacePattern);
+            QString newUrl = oldUrl;
+            newUrl.replace(regex, replacePattern);
             if (newUrl != oldUrl) {
                 if (document_.updateUrl(node, newUrl, &error)) {
                     ++modified;
@@ -597,7 +597,7 @@ void MainWindow::editTags()
         node->tags = newTags;
     }
 
-    document_.setDirty();
+    document_.setDirty(true);
     refreshList();
     LOG_INFO(QStringLiteral("Updated tags for %1 bookmarks").arg(urlNodes.size()));
     setStatus(QStringLiteral("已更新 %1 个书签的标签").arg(urlNodes.size()));
@@ -1134,10 +1134,11 @@ void MainWindow::buildUi()
     folderTree_->setMinimumWidth(280);
     folderTree_->setContextMenuPolicy(Qt::CustomContextMenu);
     folderTree_->setAlternatingRowColors(true);
-    folderTree_->setDragEnabled(true);
-    folderTree_->setAcceptDrops(true);
-    folderTree_->setDropIndicatorShown(true);
-    folderTree_->setDragDropMode(QAbstractItemView::InternalMove);
+    // Drag/drop is disabled until drops are synchronized back to BookmarkDocument.
+    folderTree_->setDragEnabled(false);
+    folderTree_->setAcceptDrops(false);
+    folderTree_->setDropIndicatorShown(false);
+    folderTree_->setDragDropMode(QAbstractItemView::NoDragDrop);
     connect(folderTree_, &QTreeWidget::itemSelectionChanged, this, &MainWindow::refreshList);
     connect(folderTree_, &QTreeWidget::customContextMenuRequested, this, &MainWindow::showTreeContextMenu);
 
@@ -1154,10 +1155,11 @@ void MainWindow::buildUi()
     itemTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     itemTable_->setContextMenuPolicy(Qt::CustomContextMenu);
     itemTable_->setAlternatingRowColors(true);
-    itemTable_->setDragEnabled(true);
-    itemTable_->setAcceptDrops(true);
-    itemTable_->setDropIndicatorShown(true);
-    itemTable_->setDragDropMode(QAbstractItemView::InternalMove);
+    // Drag/drop is disabled until drops are synchronized back to BookmarkDocument.
+    itemTable_->setDragEnabled(false);
+    itemTable_->setAcceptDrops(false);
+    itemTable_->setDropIndicatorShown(false);
+    itemTable_->setDragDropMode(QAbstractItemView::NoDragDrop);
     connect(itemTable_, &QTableWidget::cellDoubleClicked, this, &MainWindow::openSelectedUrl);
     connect(itemTable_, &QTableWidget::customContextMenuRequested, this, &MainWindow::showTableContextMenu);
 

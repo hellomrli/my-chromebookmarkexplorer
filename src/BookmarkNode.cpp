@@ -14,6 +14,15 @@ QDateTime chromeEpoch()
 BookmarkNode::BookmarkNode(QJsonObject object, QString root, BookmarkNode* parentNode)
     : raw(std::move(object)), rootKey(std::move(root)), parent(parentNode)
 {
+    const auto tagArray = raw.value(QStringLiteral("tags")).toArray();
+    tags.reserve(tagArray.size());
+    for (const auto& value : tagArray) {
+        const QString tag = value.toString().trimmed();
+        if (!tag.isEmpty() && !tags.contains(tag)) {
+            tags.append(tag);
+        }
+    }
+
     if (isFolder()) {
         const auto array = raw.value("children").toArray();
         children.reserve(static_cast<size_t>(array.size()));
@@ -30,6 +39,7 @@ QString BookmarkNode::guid() const { return raw.value("guid").toString(); }
 QString BookmarkNode::type() const { return raw.value("type").toString(); }
 QString BookmarkNode::name() const { return raw.value("name").toString(); }
 QString BookmarkNode::url() const { return raw.value("url").toString(); }
+QString BookmarkNode::dateAdded() const { return raw.value("date_added").toString(); }
 
 QString BookmarkNode::displayType() const
 {
@@ -126,8 +136,24 @@ QJsonObject BookmarkNode::toJson() const
             array.append(child->toJson());
         }
         object.insert("children", array);
+        object.remove(QStringLiteral("tags"));
+    } else if (isUrl()) {
+        if (tags.isEmpty()) {
+            object.remove(QStringLiteral("tags"));
+        } else {
+            QJsonArray tagArray;
+            for (const auto& tag : tags) {
+                tagArray.append(tag);
+            }
+            object.insert(QStringLiteral("tags"), tagArray);
+        }
     }
     return object;
+}
+
+BookmarkNode* BookmarkNode::fromJson(const QJsonObject& object, const QString& root, BookmarkNode* parentNode)
+{
+    return new BookmarkNode(object, root, parentNode);
 }
 
 QDateTime chromeTimeToDateTime(const QString& value)

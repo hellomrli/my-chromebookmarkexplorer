@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 
 #include <memory>
 #include <vector>
@@ -26,6 +27,7 @@ public:
     QString displayType() const;
     QString path() const;
     QString formattedDateAdded() const;
+    QString dateAdded() const;
 
     bool isFolder() const;
     bool isUrl() const;
@@ -42,6 +44,7 @@ public:
     QString tagsString() const;
 
     QJsonObject toJson() const;
+    static BookmarkNode* fromJson(const QJsonObject& object, const QString& root = {}, BookmarkNode* parentNode = nullptr);
 };
 
 QDateTime chromeTimeToDateTime(const QString& value);

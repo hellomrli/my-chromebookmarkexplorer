@@ -20,6 +20,7 @@ public:
 
     BookmarkNode* addFolder(BookmarkNode* parent, const QString& name);
     BookmarkNode* addBookmark(BookmarkNode* parent, const QString& name, const QString& url);
+    bool add(BookmarkNode* source, BookmarkNode* parent, QString* error = nullptr);
     bool rename(BookmarkNode* node, const QString& name, QString* error = nullptr);
     bool updateUrl(BookmarkNode* node, const QString& url, QString* error = nullptr);
     bool remove(BookmarkNode* node, QString* error = nullptr);

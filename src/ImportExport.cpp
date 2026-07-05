@@ -7,7 +7,7 @@
 #include <QJsonObject>
 #include <QTextStream>
 
-bool ImportExport::exportToHtml(const QVector<BookmarkNode*>& roots, const QString& filePath, QString* error)
+bool ImportExport::exportToHtml(const std::vector<std::unique_ptr<BookmarkNode>>& roots, const QString& filePath, QString* error)
 {
     QFile file(filePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -27,8 +27,8 @@ bool ImportExport::exportToHtml(const QVector<BookmarkNode*>& roots, const QStri
     stream << "<H1>Bookmarks</H1>\n";
     stream << "<DL><p>\n";
 
-    for (auto* root : roots) {
-        writeHtmlNode(stream, root, 1);
+    for (const auto& root : roots) {
+        writeHtmlNode(stream, root.get(), 1);
     }
 
     stream << "</DL><p>\n";
@@ -55,7 +55,7 @@ void ImportExport::writeHtmlNode(QTextStream& stream, BookmarkNode* node, int le
     }
 }
 
-bool ImportExport::exportToJson(const QVector<BookmarkNode*>& roots, const QString& filePath, QString* error)
+bool ImportExport::exportToJson(const std::vector<std::unique_ptr<BookmarkNode>>& roots, const QString& filePath, QString* error)
 {
     QFile file(filePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -67,8 +67,8 @@ bool ImportExport::exportToJson(const QVector<BookmarkNode*>& roots, const QStri
     root["version"] = 1;
 
     QJsonObject rootsObj;
-    for (auto* node : roots) {
-        rootsObj[node->name()] = node->toJson();
+    for (const auto& node : roots) {
+        rootsObj[node->rootKey.isEmpty() ? node->name() : node->rootKey] = node->toJson();
     }
     root["roots"] = rootsObj;
 
@@ -77,7 +77,7 @@ bool ImportExport::exportToJson(const QVector<BookmarkNode*>& roots, const QStri
     return true;
 }
 
-bool ImportExport::exportToCsv(const QVector<BookmarkNode*>& roots, const QString& filePath, QString* error)
+bool ImportExport::exportToCsv(const std::vector<std::unique_ptr<BookmarkNode>>& roots, const QString& filePath, QString* error)
 {
     QFile file(filePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -93,8 +93,8 @@ bool ImportExport::exportToCsv(const QVector<BookmarkNode*>& roots, const QStrin
 
     // 收集所有书签节点
     QVector<BookmarkNode*> allNodes;
-    for (auto* root : roots) {
-        collectFlatNodes(root, allNodes, root->name());
+    for (const auto& root : roots) {
+        collectFlatNodes(root.get(), allNodes, root->name());
     }
 
     // 写入 CSV 行
@@ -154,7 +154,7 @@ bool ImportExport::importFromJson(const QString& filePath, QVector<BookmarkNode*
     const QJsonObject rootsObj = rootObj["roots"].toObject();
 
     for (const QString& key : rootsObj.keys()) {
-        auto* node = BookmarkNode::fromJson(rootsObj[key].toObject());
+        auto* node = BookmarkNode::fromJson(rootsObj[key].toObject(), key, nullptr);
         if (node) {
             roots.push_back(node);
         }
