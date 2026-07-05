@@ -342,7 +342,11 @@ void MainWindow::refreshList()
     }
 
     const QString query = searchEdit_->text().trimmed();
-    int row = 0;
+
+    // 预先计算要显示的行数，避免频繁调用 insertRow
+    QVector<BookmarkNode*> visibleNodes;
+    visibleNodes.reserve(folder->children.size());
+
     for (const auto& child : folder->children) {
         BookmarkNode* node = child.get();
         if (!query.isEmpty()
@@ -350,8 +354,14 @@ void MainWindow::refreshList()
             && !node->url().contains(query, Qt::CaseInsensitive)) {
             continue;
         }
+        visibleNodes.push_back(node);
+    }
 
-        itemTable_->insertRow(row);
+    // 一次性设置行数，避免多次重新分配
+    itemTable_->setRowCount(visibleNodes.size());
+
+    for (int row = 0; row < visibleNodes.size(); ++row) {
+        BookmarkNode* node = visibleNodes[row];
 
         // 勾选框
         auto* checkItem = new QTableWidgetItem();
@@ -374,7 +384,6 @@ void MainWindow::refreshList()
         itemTable_->setItem(row, 6, new QTableWidgetItem(codeText(result.code)));
         itemTable_->setItem(row, 7, new QTableWidgetItem(result.elapsedMs > 0 ? QStringLiteral("%1 ms").arg(result.elapsedMs) : QString()));
         itemTable_->setItem(row, 8, new QTableWidgetItem(node->formattedDateAdded()));
-        ++row;
     }
     setStatus(QStringLiteral("%1：%2 项").arg(folder->path()).arg(folder->children.size()));
 }
