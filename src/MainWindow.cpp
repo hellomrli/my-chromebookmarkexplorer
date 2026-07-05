@@ -31,6 +31,8 @@
 #include <QVBoxLayout>
 #include <QVariant>
 #include <QAbstractItemView>
+#include <QIcon>
+#include <QStyle>
 
 #include <algorithm>
 
@@ -223,17 +225,27 @@ void MainWindow::refreshList()
         }
 
         itemTable_->insertRow(row);
+
+        // 勾选框
+        auto* checkItem = new QTableWidgetItem();
+        checkItem->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
+        checkItem->setCheckState(Qt::Unchecked);
+        itemTable_->setItem(row, 0, checkItem);
+
+        // 名称（带图标）
         auto* nameItem = new QTableWidgetItem(node->name());
+        nameItem->setIcon(node->isFolder() ? QIcon(":/icons/folder.png") : QIcon(":/icons/bookmark.png"));
         setNodeData(nameItem, node);
-        itemTable_->setItem(row, 0, nameItem);
-        itemTable_->setItem(row, 1, new QTableWidgetItem(node->displayType()));
-        itemTable_->setItem(row, 2, new QTableWidgetItem(node->url()));
+        itemTable_->setItem(row, 1, nameItem);
+
+        itemTable_->setItem(row, 2, new QTableWidgetItem(node->displayType()));
+        itemTable_->setItem(row, 3, new QTableWidgetItem(node->url()));
 
         const auto result = healthResults_.value(node);
-        itemTable_->setItem(row, 3, new QTableWidgetItem(result.status));
-        itemTable_->setItem(row, 4, new QTableWidgetItem(codeText(result.code)));
-        itemTable_->setItem(row, 5, new QTableWidgetItem(result.elapsedMs > 0 ? QStringLiteral("%1 ms").arg(result.elapsedMs) : QString()));
-        itemTable_->setItem(row, 6, new QTableWidgetItem(node->formattedDateAdded()));
+        itemTable_->setItem(row, 4, new QTableWidgetItem(result.status));
+        itemTable_->setItem(row, 5, new QTableWidgetItem(codeText(result.code)));
+        itemTable_->setItem(row, 6, new QTableWidgetItem(result.elapsedMs > 0 ? QStringLiteral("%1 ms").arg(result.elapsedMs) : QString()));
+        itemTable_->setItem(row, 7, new QTableWidgetItem(node->formattedDateAdded()));
         ++row;
     }
     setStatus(QStringLiteral("%1：%2 项").arg(folder->path()).arg(folder->children.size()));
@@ -701,6 +713,27 @@ void MainWindow::showTableContextMenu(const QPoint& position)
     auto* openAction = menu.addAction(QStringLiteral("打开网址"), this, &MainWindow::openSelectedUrl);
     openAction->setEnabled(nodes.size() == 1 && nodes[0]->isUrl());
     menu.addSeparator();
+
+    // 全选/取消全选勾选框
+    auto* selectAllAction = menu.addAction(QStringLiteral("全选"));
+    connect(selectAllAction, &QAction::triggered, this, [this]() {
+        for (int row = 0; row < itemTable_->rowCount(); ++row) {
+            if (auto* checkItem = itemTable_->item(row, 0)) {
+                checkItem->setCheckState(Qt::Checked);
+            }
+        }
+    });
+
+    auto* unselectAllAction = menu.addAction(QStringLiteral("取消全选"));
+    connect(unselectAllAction, &QAction::triggered, this, [this]() {
+        for (int row = 0; row < itemTable_->rowCount(); ++row) {
+            if (auto* checkItem = itemTable_->item(row, 0)) {
+                checkItem->setCheckState(Qt::Unchecked);
+            }
+        }
+    });
+
+    menu.addSeparator();
     menu.addAction(QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
     menu.addAction(QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
     menu.addSeparator();
@@ -725,36 +758,41 @@ void MainWindow::showTableContextMenu(const QPoint& position)
 void MainWindow::buildUi()
 {
     setWindowTitle(QStringLiteral("Chrome Bookmark Explorer"));
-    resize(1180, 720);
+    setWindowIcon(QIcon(":/icons/app.png"));
+    resize(1200, 760);
 
     auto* toolbar = addToolBar(QStringLiteral("工具栏"));
     toolbar->setMovable(false);
+    toolbar->setIconSize(QSize(20, 20));
+    toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 
-    toolbar->addWidget(new QLabel(QStringLiteral("Profile ")));
+    toolbar->addWidget(new QLabel(QStringLiteral(" Profile ")));
     profileCombo_ = new QComboBox(this);
     profileCombo_->setMinimumWidth(280);
     toolbar->addWidget(profileCombo_);
     connect(profileCombo_, qOverload<int>(&QComboBox::activated), this, [this](int) { loadSelectedProfile(); });
 
-    toolbar->addAction(QStringLiteral("刷新"), this, &MainWindow::reloadProfiles);
-    toolbar->addAction(QStringLiteral("打开文件"), this, &MainWindow::openBookmarksFile);
-    toolbar->addAction(QStringLiteral("保存"), this, &MainWindow::saveBookmarks);
-    toolbar->addAction(QStringLiteral("另存为"), this, &MainWindow::saveBookmarksAs);
+    auto* refreshAction = toolbar->addAction(style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("刷新"), this, &MainWindow::reloadProfiles);
+    auto* openAction = toolbar->addAction(style()->standardIcon(QStyle::SP_DialogOpenButton), QStringLiteral("打开文件"), this, &MainWindow::openBookmarksFile);
+    auto* saveAction = toolbar->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), QStringLiteral("保存"), this, &MainWindow::saveBookmarks);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), QStringLiteral("另存为"), this, &MainWindow::saveBookmarksAs);
+
     toolbar->addSeparator();
-    toolbar->addAction(QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
-    toolbar->addAction(QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
-    toolbar->addAction(QStringLiteral("重命名"), this, &MainWindow::renameSelected);
-    toolbar->addAction(QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
-    toolbar->addAction(QStringLiteral("删除"), this, &MainWindow::deleteSelected);
-    toolbar->addAction(QStringLiteral("移动到"), this, &MainWindow::moveSelected);
-    toolbar->addAction(QStringLiteral("查重"), this, &MainWindow::scanDuplicates);
+    auto* newFolderAction = toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogNewFolder), QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
+    auto* newBookmarkAction = toolbar->addAction(style()->standardIcon(QStyle::SP_FileIcon), QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("重命名"), this, &MainWindow::renameSelected);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_TrashIcon), QStringLiteral("删除"), this, &MainWindow::deleteSelected);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_ArrowRight), QStringLiteral("移动到"), this, &MainWindow::moveSelected);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("查重"), this, &MainWindow::scanDuplicates);
+
     toolbar->addSeparator();
 
     includeSubfolders_ = new QCheckBox(QStringLiteral("含子文件夹"), this);
     includeSubfolders_->setChecked(true);
     toolbar->addWidget(includeSubfolders_);
 
-    toolbar->addWidget(new QLabel(QStringLiteral("并发数 ")));
+    toolbar->addWidget(new QLabel(QStringLiteral(" 并发数 ")));
     concurrencySpin_ = new QSpinBox(this);
     concurrencySpin_->setRange(1, 128);
     concurrencySpin_->setValue(health_.maxConcurrent());
@@ -762,44 +800,49 @@ void MainWindow::buildUi()
     concurrencySpin_->setMaximumWidth(72);
     toolbar->addWidget(concurrencySpin_);
 
-    checkButton_ = new QPushButton(QStringLiteral("网址测活"), this);
+    checkButton_ = new QPushButton(style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("网址测活"), this);
     toolbar->addWidget(checkButton_);
     connect(checkButton_, &QPushButton::clicked, this, &MainWindow::checkUrls);
     toolbar->addAction(QStringLiteral("删除异常"), this, &MainWindow::deleteFailedUrls);
     toolbar->addAction(QStringLiteral("移动异常"), this, &MainWindow::moveFailedUrls);
 
     toolbar->addSeparator();
-    toolbar->addWidget(new QLabel(QStringLiteral("搜索 ")));
+    toolbar->addWidget(new QLabel(QStringLiteral(" 搜索 ")));
     searchEdit_ = new QLineEdit(this);
-    searchEdit_->setMaximumWidth(260);
+    searchEdit_->setPlaceholderText(QStringLiteral("搜索书签名称或网址..."));
+    searchEdit_->setMaximumWidth(280);
     toolbar->addWidget(searchEdit_);
     connect(searchEdit_, &QLineEdit::textChanged, this, &MainWindow::refreshList);
 
     auto* splitter = new QSplitter(this);
     folderTree_ = new QTreeWidget(splitter);
     folderTree_->setHeaderHidden(true);
-    folderTree_->setMinimumWidth(260);
+    folderTree_->setMinimumWidth(280);
     folderTree_->setContextMenuPolicy(Qt::CustomContextMenu);
+    folderTree_->setAlternatingRowColors(true);
     connect(folderTree_, &QTreeWidget::itemSelectionChanged, this, &MainWindow::refreshList);
     connect(folderTree_, &QTreeWidget::customContextMenuRequested, this, &MainWindow::showTreeContextMenu);
 
     itemTable_ = new QTableWidget(splitter);
-    itemTable_->setColumnCount(7);
-    itemTable_->setHorizontalHeaderLabels({QStringLiteral("名称"), QStringLiteral("类型"), QStringLiteral("网址"), QStringLiteral("测活"), QStringLiteral("状态码"), QStringLiteral("耗时"), QStringLiteral("添加时间")});
+    itemTable_->setColumnCount(8);
+    itemTable_->setHorizontalHeaderLabels({QStringLiteral(""), QStringLiteral("名称"), QStringLiteral("类型"), QStringLiteral("网址"), QStringLiteral("测活"), QStringLiteral("状态码"), QStringLiteral("耗时"), QStringLiteral("添加时间")});
     itemTable_->horizontalHeader()->setStretchLastSection(false);
-    itemTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    itemTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    itemTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
+    itemTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    itemTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    itemTable_->setColumnWidth(0, 32);
     itemTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     itemTable_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     itemTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     itemTable_->setContextMenuPolicy(Qt::CustomContextMenu);
+    itemTable_->setAlternatingRowColors(true);
     connect(itemTable_, &QTableWidget::cellDoubleClicked, this, &MainWindow::openSelectedUrl);
     connect(itemTable_, &QTableWidget::customContextMenuRequested, this, &MainWindow::showTableContextMenu);
 
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 4);
     setCentralWidget(splitter);
-    statusBar();
+    statusBar()->setStyleSheet("QStatusBar { border-top: 1px solid palette(mid); padding: 4px; }");
 }
 
 void MainWindow::refreshTree(const QString& preferredPath)
@@ -841,6 +884,7 @@ void MainWindow::addFolderItem(QTreeWidgetItem* parentItem, BookmarkNode* node)
 {
     auto* item = parentItem == nullptr ? new QTreeWidgetItem(folderTree_) : new QTreeWidgetItem(parentItem);
     item->setText(0, node->name());
+    item->setIcon(0, QIcon(":/icons/folder.png"));
     if (!node->isRoot()) {
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(0, Qt::Unchecked);
@@ -861,6 +905,30 @@ BookmarkNode* MainWindow::currentFolder() const
 QVector<BookmarkNode*> MainWindow::selectedListNodes() const
 {
     QVector<BookmarkNode*> nodes;
+    QSet<int> checkedRows;
+
+    // 收集勾选的行
+    for (int row = 0; row < itemTable_->rowCount(); ++row) {
+        if (auto* checkItem = itemTable_->item(row, 0)) {
+            if (checkItem->checkState() == Qt::Checked) {
+                checkedRows.insert(row);
+            }
+        }
+    }
+
+    // 如果有勾选项，优先返回勾选的
+    if (!checkedRows.isEmpty()) {
+        for (int row : checkedRows) {
+            if (auto* item = itemTable_->item(row, 1)) {
+                if (auto* node = nodeFromTableItem(item)) {
+                    nodes.push_back(node);
+                }
+            }
+        }
+        return nodes;
+    }
+
+    // 否则返回选中的行
     const auto ranges = itemTable_->selectedRanges();
     QSet<int> rows;
     for (const auto& range : ranges) {
@@ -869,7 +937,7 @@ QVector<BookmarkNode*> MainWindow::selectedListNodes() const
         }
     }
     for (int row : rows) {
-        if (auto* item = itemTable_->item(row, 0)) {
+        if (auto* item = itemTable_->item(row, 1)) {
             if (auto* node = nodeFromTableItem(item)) {
                 nodes.push_back(node);
             }

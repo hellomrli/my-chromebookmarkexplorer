@@ -20,7 +20,12 @@ qt_add_executable(ChromeBookmarkExplorer WIN32
     src/HealthChecker.cpp
     src/MainWindow.h
     src/MainWindow.cpp
+    resources/icons.qrc
 )
+
+if (WIN32)
+    target_sources(ChromeBookmarkExplorer PRIVATE resources/app.rc)
+endif()
 
 target_link_libraries(ChromeBookmarkExplorer PRIVATE Qt6::Widgets Qt6::Network)
 

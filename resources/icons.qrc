@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file>app.png</file>
+        <file>folder.png</file>
+        <file>folder-open.png</file>
+        <file>bookmark.png</file>
+    </qresource>
+</RCC>
