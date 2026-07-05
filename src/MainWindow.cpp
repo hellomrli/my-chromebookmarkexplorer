@@ -959,6 +959,10 @@ void MainWindow::buildUi()
     folderTree_->setMinimumWidth(280);
     folderTree_->setContextMenuPolicy(Qt::CustomContextMenu);
     folderTree_->setAlternatingRowColors(true);
+    folderTree_->setDragEnabled(true);
+    folderTree_->setAcceptDrops(true);
+    folderTree_->setDropIndicatorShown(true);
+    folderTree_->setDragDropMode(QAbstractItemView::InternalMove);
     connect(folderTree_, &QTreeWidget::itemSelectionChanged, this, &MainWindow::refreshList);
     connect(folderTree_, &QTreeWidget::customContextMenuRequested, this, &MainWindow::showTreeContextMenu);
 
@@ -975,6 +979,10 @@ void MainWindow::buildUi()
     itemTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     itemTable_->setContextMenuPolicy(Qt::CustomContextMenu);
     itemTable_->setAlternatingRowColors(true);
+    itemTable_->setDragEnabled(true);
+    itemTable_->setAcceptDrops(true);
+    itemTable_->setDropIndicatorShown(true);
+    itemTable_->setDragDropMode(QAbstractItemView::InternalMove);
     connect(itemTable_, &QTableWidget::cellDoubleClicked, this, &MainWindow::openSelectedUrl);
     connect(itemTable_, &QTableWidget::customContextMenuRequested, this, &MainWindow::showTableContextMenu);
 
