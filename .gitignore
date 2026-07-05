@@ -1,0 +1,11 @@
+build/
+out/
+*.user
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.zip
+*.7z
+Bookmarks.backup-*

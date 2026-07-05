@@ -1,0 +1,47 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.7.3"
+          host: "windows"
+          target: "desktop"
+          arch: "win64_msvc2019_64"
+          cache: true
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="$env:Qt6_DIR"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Deploy Qt runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\ChromeBookmarkExplorer | Out-Null
+          Copy-Item build\Release\ChromeBookmarkExplorer.exe dist\ChromeBookmarkExplorer\ -Force
+          windeployqt --release --no-translations dist\ChromeBookmarkExplorer\ChromeBookmarkExplorer.exe
+
+      - name: Archive
+        shell: pwsh
+        run: Compress-Archive -Path dist\ChromeBookmarkExplorer\* -DestinationPath ChromeBookmarkExplorer-windows-x64.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChromeBookmarkExplorer-windows-x64
+          path: ChromeBookmarkExplorer-windows-x64.zip
