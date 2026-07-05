@@ -3,8 +3,11 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QDesktopServices>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QHeaderView>
@@ -17,6 +20,7 @@
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -24,8 +28,11 @@
 #include <QToolBar>
 #include <QTreeWidget>
 #include <QUrl>
+#include <QVBoxLayout>
 #include <QVariant>
 #include <QAbstractItemView>
+
+#include <algorithm>
 
 namespace {
 constexpr int NodeRole = Qt::UserRole + 1;
@@ -33,6 +40,29 @@ constexpr int NodeRole = Qt::UserRole + 1;
 QString codeText(int code)
 {
     return code > 0 ? QString::number(code) : QString();
+}
+
+QString normalizedUrlKey(const QString& input)
+{
+    const QString trimmed = input.trimmed();
+    if (trimmed.isEmpty()) {
+        return {};
+    }
+
+    QUrl url = QUrl::fromUserInput(trimmed);
+    if (!url.isValid()) {
+        return trimmed.toCaseFolded();
+    }
+
+    url.setFragment(QString());
+    url.setScheme(url.scheme().toLower());
+    url.setHost(url.host().toLower());
+    QString path = url.path();
+    while (path.size() > 1 && path.endsWith('/')) {
+        path.chop(1);
+    }
+    url.setPath(path);
+    return url.toString(QUrl::RemovePassword | QUrl::NormalizePathSegments).toCaseFolded();
 }
 }
 
@@ -73,17 +103,34 @@ void MainWindow::reloadProfiles()
     startupLoading_ = false;
 }
 
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    if (confirmDiscardChanges()) {
+        event->accept();
+    } else {
+        event->ignore();
+    }
+}
+
 void MainWindow::loadSelectedProfile()
 {
     const int index = profileCombo_->currentIndex();
     if (index < 0 || index >= profiles_.size()) {
         return;
     }
+    if (!confirmDiscardChanges()) {
+        QSignalBlocker blocker(profileCombo_);
+        profileCombo_->setCurrentIndex(loadedProfileIndex_);
+        return;
+    }
     QString error;
     if (!document_.load(profiles_[index].bookmarksPath, &error)) {
+        QSignalBlocker blocker(profileCombo_);
+        profileCombo_->setCurrentIndex(loadedProfileIndex_);
         QMessageBox::critical(this, QStringLiteral("打开失败"), error);
         return;
     }
+    loadedProfileIndex_ = index;
     healthResults_.clear();
     refreshTree();
     setStatus(QStringLiteral("已打开：%1").arg(document_.path()));
@@ -91,6 +138,9 @@ void MainWindow::loadSelectedProfile()
 
 void MainWindow::openBookmarksFile()
 {
+    if (!confirmDiscardChanges()) {
+        return;
+    }
     const QString path = QFileDialog::getOpenFileName(
         this,
         QStringLiteral("选择 Chrome Bookmarks 文件"),
@@ -104,6 +154,11 @@ void MainWindow::openBookmarksFile()
         QMessageBox::critical(this, QStringLiteral("打开失败"), error);
         return;
     }
+    loadedProfileIndex_ = -1;
+    {
+        QSignalBlocker blocker(profileCombo_);
+        profileCombo_->setCurrentIndex(-1);
+    }
     healthResults_.clear();
     refreshTree();
     setStatus(QStringLiteral("已打开：%1").arg(document_.path()));
@@ -111,11 +166,25 @@ void MainWindow::openBookmarksFile()
 
 void MainWindow::saveBookmarks()
 {
+    saveBookmarksInternal(false);
+}
+
+void MainWindow::saveBookmarksAs()
+{
+    saveBookmarksInternal(true);
+}
+
+bool MainWindow::saveBookmarksInternal(bool forceChoosePath)
+{
     QString target = document_.path();
-    if (target.isEmpty()) {
-        target = QFileDialog::getSaveFileName(this, QStringLiteral("保存 Bookmarks 文件"), QStringLiteral("Bookmarks"));
+    if (forceChoosePath || target.isEmpty()) {
+        target = QFileDialog::getSaveFileName(
+            this,
+            forceChoosePath ? QStringLiteral("另存为 Bookmarks 文件") : QStringLiteral("保存 Bookmarks 文件"),
+            target.isEmpty() ? QStringLiteral("Bookmarks") : target,
+            QStringLiteral("Chrome Bookmarks (Bookmarks);;JSON (*.json);;All files (*.*)"));
         if (target.isEmpty()) {
-            return;
+            return false;
         }
     }
 
@@ -126,11 +195,13 @@ void MainWindow::saveBookmarks()
     if (!document_.save(target, true, &error)) {
         closeProgress();
         QMessageBox::critical(this, QStringLiteral("保存失败"), error);
-        return;
+        return false;
     }
     updateProgress(QStringLiteral("保存完成"), 3);
     closeProgress();
+    updateDirtyState();
     setStatus(QStringLiteral("已保存并自动备份：%1").arg(target));
+    return true;
 }
 
 void MainWindow::refreshList()
@@ -227,6 +298,29 @@ void MainWindow::renameSelected()
     refreshTree(node->isFolder() ? node->path() : fallbackPath);
 }
 
+void MainWindow::editSelectedUrl()
+{
+    const auto nodes = selectedListNodes();
+    if (nodes.size() != 1 || !nodes[0]->isUrl()) {
+        QMessageBox::information(this, QStringLiteral("编辑网址"), QStringLiteral("请在右侧列表选择一个书签"));
+        return;
+    }
+
+    auto* node = nodes[0];
+    bool ok = false;
+    const QString url = QInputDialog::getText(this, QStringLiteral("编辑网址"), QStringLiteral("网址："), QLineEdit::Normal, node->url(), &ok);
+    if (!ok || url.trimmed().isEmpty()) {
+        return;
+    }
+
+    QString error;
+    if (!document_.updateUrl(node, url.trimmed(), &error)) {
+        QMessageBox::warning(this, QStringLiteral("编辑网址失败"), error);
+        return;
+    }
+    refreshTree(currentFolderPath());
+}
+
 void MainWindow::deleteSelected()
 {
     auto nodes = selectedOperationNodes();
@@ -279,10 +373,18 @@ void MainWindow::moveSelected()
 void MainWindow::openSelectedUrl()
 {
     const auto nodes = selectedListNodes();
-    if (nodes.size() != 1 || !nodes[0]->isUrl()) {
+    if (nodes.size() != 1) {
         return;
     }
-    QDesktopServices::openUrl(QUrl(nodes[0]->url()));
+    if (nodes[0]->isFolder()) {
+        if (auto* item = findFolderItemByPath(nodes[0]->path())) {
+            folderTree_->setCurrentItem(item);
+        }
+        return;
+    }
+    if (nodes[0]->isUrl()) {
+        QDesktopServices::openUrl(QUrl(nodes[0]->url()));
+    }
 }
 
 void MainWindow::checkUrls()
@@ -311,6 +413,202 @@ void MainWindow::checkUrls()
     }
     setStatus(QStringLiteral("开始测活：%1 个网址，并发 %2").arg(nodes.size()).arg(maxConcurrent));
     health_.check(nodes);
+}
+
+void MainWindow::scanDuplicates()
+{
+    QHash<QString, QVector<BookmarkNode*>> groups;
+    for (auto* node : document_.allNodes()) {
+        if (node == nullptr || !node->isUrl()) {
+            continue;
+        }
+        const QString key = normalizedUrlKey(node->url());
+        if (!key.isEmpty()) {
+            groups[key].push_back(node);
+        }
+    }
+
+    QVector<QString> duplicateKeys;
+    int duplicateItems = 0;
+    for (auto it = groups.cbegin(); it != groups.cend(); ++it) {
+        if (it.value().size() > 1) {
+            duplicateKeys.push_back(it.key());
+            duplicateItems += it.value().size();
+        }
+    }
+
+    if (duplicateKeys.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("重复书签"), QStringLiteral("没有发现重复网址。"));
+        setStatus(QStringLiteral("未发现重复书签"));
+        return;
+    }
+
+    std::sort(duplicateKeys.begin(), duplicateKeys.end());
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("重复书签"));
+    dialog.resize(980, 560);
+
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->addWidget(new QLabel(
+        QStringLiteral("发现 %1 组重复网址，共 %2 个书签。以下列表仅用于查看，请回到主窗口进行重命名、移动或删除。")
+            .arg(duplicateKeys.size())
+            .arg(duplicateItems),
+        &dialog));
+
+    auto* table = new QTableWidget(&dialog);
+    table->setColumnCount(4);
+    table->setHorizontalHeaderLabels({QStringLiteral("重复网址"), QStringLiteral("名称"), QStringLiteral("所在文件夹"), QStringLiteral("添加时间")});
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::SingleSelection);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    layout->addWidget(table, 1);
+
+    int row = 0;
+    for (const auto& key : duplicateKeys) {
+        const auto nodes = groups.value(key);
+        for (auto* node : nodes) {
+            table->insertRow(row);
+            table->setItem(row, 0, new QTableWidgetItem(node->url()));
+            table->setItem(row, 1, new QTableWidgetItem(node->name()));
+            table->setItem(row, 2, new QTableWidgetItem(node->parent == nullptr ? QString() : node->parent->path()));
+            table->setItem(row, 3, new QTableWidgetItem(node->formattedDateAdded()));
+            ++row;
+        }
+    }
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    setStatus(QStringLiteral("发现 %1 组重复网址，共 %2 个书签").arg(duplicateKeys.size()).arg(duplicateItems));
+    dialog.exec();
+}
+
+void MainWindow::deleteFailedUrls()
+{
+    const auto nodes = failedHealthNodes();
+    if (nodes.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("删除异常链接"), QStringLiteral("没有可删除的异常链接。请先运行网址测活。"));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("确认删除异常链接"));
+    dialog.resize(1080, 560);
+
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->addWidget(new QLabel(
+        QStringLiteral("以下是当前测活结果中的异常链接，默认全选。请取消勾选不想删除的链接，然后点击“确认删除”。"),
+        &dialog));
+
+    auto* table = new QTableWidget(&dialog);
+    table->setColumnCount(6);
+    table->setHorizontalHeaderLabels({QStringLiteral("删除"), QStringLiteral("名称"), QStringLiteral("网址"), QStringLiteral("测活状态"), QStringLiteral("状态码"), QStringLiteral("所在文件夹")});
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::SingleSelection);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    layout->addWidget(table, 1);
+
+    int row = 0;
+    for (auto* node : nodes) {
+        const auto result = healthResults_.value(node);
+        table->insertRow(row);
+
+        auto* checkItem = new QTableWidgetItem();
+        checkItem->setFlags((checkItem->flags() | Qt::ItemIsUserCheckable) & ~Qt::ItemIsEditable);
+        checkItem->setCheckState(Qt::Checked);
+        setNodeData(checkItem, node);
+        table->setItem(row, 0, checkItem);
+
+        table->setItem(row, 1, new QTableWidgetItem(node->name()));
+        table->setItem(row, 2, new QTableWidgetItem(node->url()));
+        table->setItem(row, 3, new QTableWidgetItem(result.status));
+        table->setItem(row, 4, new QTableWidgetItem(codeText(result.code)));
+        table->setItem(row, 5, new QTableWidgetItem(node->parent == nullptr ? QString() : node->parent->path()));
+        ++row;
+    }
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("确认删除"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    QVector<BookmarkNode*> selectedNodes;
+    for (int i = 0; i < table->rowCount(); ++i) {
+        auto* item = table->item(i, 0);
+        if (item != nullptr && item->checkState() == Qt::Checked) {
+            if (auto* node = nodeFromTableItem(item)) {
+                selectedNodes.push_back(node);
+            }
+        }
+    }
+
+    if (selectedNodes.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("删除异常链接"), QStringLiteral("没有勾选任何链接，未执行删除。"));
+        return;
+    }
+
+    const QString previousPath = currentFolderPath();
+    int removed = 0;
+    QString error;
+    for (auto* node : selectedNodes) {
+        if (document_.remove(node, &error)) {
+            healthResults_.remove(node);
+            ++removed;
+        } else {
+            QMessageBox::warning(this, QStringLiteral("删除异常链接失败"), error);
+            break;
+        }
+    }
+
+    refreshTree(nearestExistingFolderPath(previousPath));
+    setStatus(QStringLiteral("已删除 %1 个异常链接").arg(removed));
+}
+
+void MainWindow::moveFailedUrls()
+{
+    const auto nodes = failedHealthNodes();
+    if (nodes.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("移动异常链接"), QStringLiteral("没有可移动的异常链接。请先运行网址测活。"));
+        return;
+    }
+
+    auto* target = chooseFolder();
+    if (target == nullptr) {
+        return;
+    }
+
+    const QString previousPath = currentFolderPath();
+    int moved = 0;
+    QString error;
+    for (auto* node : nodes) {
+        if (document_.move(node, target, &error)) {
+            ++moved;
+        } else {
+            QMessageBox::warning(this, QStringLiteral("移动异常链接失败"), error);
+            break;
+        }
+    }
+
+    refreshTree(nearestExistingFolderPath(previousPath));
+    setStatus(QStringLiteral("已移动 %1 个异常链接到：%2").arg(moved).arg(target->path()));
 }
 
 void MainWindow::onHealthResult(BookmarkNode* node, const HealthResult& result)
@@ -355,11 +653,17 @@ void MainWindow::showTreeContextMenu(const QPoint& position)
     menu.addSeparator();
 
     auto* renameAction = menu.addAction(QStringLiteral("重命名"), this, &MainWindow::renameSelected);
+    auto* editUrlAction = menu.addAction(QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
     auto* deleteAction = menu.addAction(QStringLiteral("删除"), this, &MainWindow::deleteSelected);
     auto* moveAction = menu.addAction(QStringLiteral("移动到"), this, &MainWindow::moveSelected);
     renameAction->setEnabled(!folder->isRoot() || selectedOperationNodes().size() == 1);
+    editUrlAction->setEnabled(false);
     deleteAction->setEnabled(!folder->isRoot() || !selectedOperationNodes().isEmpty());
     moveAction->setEnabled(!folder->isRoot() || !selectedOperationNodes().isEmpty());
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("查找重复书签"), this, &MainWindow::scanDuplicates);
+    menu.addAction(QStringLiteral("删除异常链接"), this, &MainWindow::deleteFailedUrls);
+    menu.addAction(QStringLiteral("移动异常链接"), this, &MainWindow::moveFailedUrls);
 
     if (item != nullptr && (item->flags() & Qt::ItemIsUserCheckable)) {
         menu.addSeparator();
@@ -401,14 +705,19 @@ void MainWindow::showTableContextMenu(const QPoint& position)
     menu.addAction(QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
     menu.addSeparator();
     auto* renameAction = menu.addAction(QStringLiteral("重命名"), this, &MainWindow::renameSelected);
+    auto* editUrlAction = menu.addAction(QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
     auto* deleteAction = menu.addAction(QStringLiteral("删除"), this, &MainWindow::deleteSelected);
     auto* moveAction = menu.addAction(QStringLiteral("移动到"), this, &MainWindow::moveSelected);
     const bool hasOperationNodes = !selectedOperationNodes().isEmpty();
     renameAction->setEnabled(selectedOperationNodes().size() <= 1);
+    editUrlAction->setEnabled(nodes.size() == 1 && nodes[0]->isUrl());
     deleteAction->setEnabled(hasOperationNodes || currentFolder() != nullptr);
     moveAction->setEnabled(hasOperationNodes);
     menu.addSeparator();
     menu.addAction(QStringLiteral("网址测活"), this, &MainWindow::checkUrls);
+    menu.addAction(QStringLiteral("查找重复书签"), this, &MainWindow::scanDuplicates);
+    menu.addAction(QStringLiteral("删除异常链接"), this, &MainWindow::deleteFailedUrls);
+    menu.addAction(QStringLiteral("移动异常链接"), this, &MainWindow::moveFailedUrls);
 
     menu.exec(itemTable_->viewport()->mapToGlobal(position));
 }
@@ -430,12 +739,15 @@ void MainWindow::buildUi()
     toolbar->addAction(QStringLiteral("刷新"), this, &MainWindow::reloadProfiles);
     toolbar->addAction(QStringLiteral("打开文件"), this, &MainWindow::openBookmarksFile);
     toolbar->addAction(QStringLiteral("保存"), this, &MainWindow::saveBookmarks);
+    toolbar->addAction(QStringLiteral("另存为"), this, &MainWindow::saveBookmarksAs);
     toolbar->addSeparator();
     toolbar->addAction(QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
     toolbar->addAction(QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
     toolbar->addAction(QStringLiteral("重命名"), this, &MainWindow::renameSelected);
+    toolbar->addAction(QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
     toolbar->addAction(QStringLiteral("删除"), this, &MainWindow::deleteSelected);
     toolbar->addAction(QStringLiteral("移动到"), this, &MainWindow::moveSelected);
+    toolbar->addAction(QStringLiteral("查重"), this, &MainWindow::scanDuplicates);
     toolbar->addSeparator();
 
     includeSubfolders_ = new QCheckBox(QStringLiteral("含子文件夹"), this);
@@ -453,6 +765,8 @@ void MainWindow::buildUi()
     checkButton_ = new QPushButton(QStringLiteral("网址测活"), this);
     toolbar->addWidget(checkButton_);
     connect(checkButton_, &QPushButton::clicked, this, &MainWindow::checkUrls);
+    toolbar->addAction(QStringLiteral("删除异常"), this, &MainWindow::deleteFailedUrls);
+    toolbar->addAction(QStringLiteral("移动异常"), this, &MainWindow::moveFailedUrls);
 
     toolbar->addSeparator();
     toolbar->addWidget(new QLabel(QStringLiteral("搜索 ")));
@@ -520,6 +834,7 @@ void MainWindow::refreshTree(const QString& preferredPath)
         folderTree_->setCurrentItem(selectedItem);
     }
     refreshList();
+    updateDirtyState();
 }
 
 void MainWindow::addFolderItem(QTreeWidgetItem* parentItem, BookmarkNode* node)
@@ -629,6 +944,45 @@ BookmarkNode* MainWindow::chooseFolder()
     }
     const int index = labels.indexOf(selected);
     return index >= 0 ? folders[index] : nullptr;
+}
+
+QVector<BookmarkNode*> MainWindow::failedHealthNodes() const
+{
+    QVector<BookmarkNode*> nodes;
+    QSet<BookmarkNode*> seen;
+    for (auto it = healthResults_.cbegin(); it != healthResults_.cend(); ++it) {
+        auto* node = it.key();
+        if (node != nullptr && node->isUrl() && !it.value().ok() && !seen.contains(node)) {
+            seen.insert(node);
+            nodes.push_back(node);
+        }
+    }
+    return nodes;
+}
+
+bool MainWindow::confirmDiscardChanges()
+{
+    if (!document_.isDirty()) {
+        return true;
+    }
+
+    const auto choice = QMessageBox::warning(
+        this,
+        QStringLiteral("未保存的更改"),
+        QStringLiteral("当前收藏夹有未保存的更改，是否先保存？"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Save);
+
+    if (choice == QMessageBox::Save) {
+        return saveBookmarksInternal(false);
+    }
+    return choice == QMessageBox::Discard;
+}
+
+void MainWindow::updateDirtyState()
+{
+    const QString suffix = document_.isDirty() ? QStringLiteral(" *") : QString();
+    setWindowTitle(QStringLiteral("Chrome Bookmark Explorer%1").arg(suffix));
 }
 
 QString MainWindow::currentFolderPath() const

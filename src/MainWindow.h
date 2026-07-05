@@ -11,6 +11,7 @@
 
 class QPoint;
 class QCheckBox;
+class QCloseEvent;
 class QComboBox;
 class QLineEdit;
 class QProgressDialog;
@@ -28,19 +29,27 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget* parent = nullptr);
 
+protected:
+    void closeEvent(QCloseEvent* event) override;
+
 private slots:
     void reloadProfiles();
     void loadSelectedProfile();
     void openBookmarksFile();
     void saveBookmarks();
+    void saveBookmarksAs();
     void refreshList();
     void newFolder();
     void newBookmark();
     void renameSelected();
+    void editSelectedUrl();
     void deleteSelected();
     void moveSelected();
     void openSelectedUrl();
     void checkUrls();
+    void scanDuplicates();
+    void deleteFailedUrls();
+    void moveFailedUrls();
     void onHealthResult(BookmarkNode* node, const HealthResult& result);
     void onHealthFinished(int total, int failed);
     void showTreeContextMenu(const QPoint& position);
@@ -52,6 +61,7 @@ private:
     HealthChecker health_;
     QHash<BookmarkNode*, HealthResult> healthResults_;
     bool startupLoading_ = true;
+    int loadedProfileIndex_ = -1;
     int healthTotal_ = 0;
     int healthCompleted_ = 0;
 
@@ -74,6 +84,10 @@ private:
     QVector<BookmarkNode*> collectUrlNodes(BookmarkNode* folder, bool recursive) const;
     QVector<BookmarkNode*> collectFolders() const;
     BookmarkNode* chooseFolder();
+    bool saveBookmarksInternal(bool forceChoosePath = false);
+    bool confirmDiscardChanges();
+    void updateDirtyState();
+    QVector<BookmarkNode*> failedHealthNodes() const;
     QString currentFolderPath() const;
     QString nearestExistingFolderPath(QString path) const;
     QStringList checkedFolderPaths() const;
