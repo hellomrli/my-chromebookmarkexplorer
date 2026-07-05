@@ -2,7 +2,7 @@
 
 Windows 原生版 Chrome 收藏夹管理工具，使用 **C++17 + Qt6** 编写。界面采用类似资源管理器的文件夹管理视图：左侧收藏夹文件夹树，右侧当前文件夹内容列表，并包含网址测活功能。
 
-![Version](https://img.shields.io/badge/version-0.2.0-blue)
+![Version](https://img.shields.io/badge/version-0.2.1-blue)
 ![Qt](https://img.shields.io/badge/Qt-6.x-green)
 ![C++](https://img.shields.io/badge/C++-17-orange)
 
