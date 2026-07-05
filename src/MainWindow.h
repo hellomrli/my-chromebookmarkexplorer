@@ -44,6 +44,7 @@ private slots:
     void newBookmark();
     void renameSelected();
     void editSelectedUrl();
+    void batchEditUrls();
     void deleteSelected();
     void moveSelected();
     void openSelectedUrl();

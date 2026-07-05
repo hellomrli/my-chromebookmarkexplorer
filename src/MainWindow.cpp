@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "BatchEditDialog.h"
 
 #include <QAction>
 #include <QApplication>
@@ -19,6 +20,7 @@
 #include <QPoint>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSplitter>
@@ -339,6 +341,97 @@ void MainWindow::editSelectedUrl()
         return;
     }
     refreshTree(currentFolderPath());
+}
+
+void MainWindow::batchEditUrls()
+{
+    auto nodes = selectedListNodes();
+    if (nodes.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("批量编辑"), QStringLiteral("请先勾选或选中要编辑的书签"));
+        return;
+    }
+
+    // 只保留书签（URL 节点）
+    QVector<BookmarkNode*> urlNodes;
+    for (auto* node : nodes) {
+        if (node->isUrl()) {
+            urlNodes.push_back(node);
+        }
+    }
+
+    if (urlNodes.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("批量编辑"), QStringLiteral("选中的项目中没有书签"));
+        return;
+    }
+
+    BatchEditDialog dialog(urlNodes.size(), this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const QString searchPattern = dialog.searchPattern();
+    const QString replacePattern = dialog.replacePattern();
+
+    if (searchPattern.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("批量编辑"), QStringLiteral("查找内容不能为空"));
+        return;
+    }
+
+    int modified = 0;
+    QString error;
+
+    if (dialog.useRegex()) {
+        // 正则表达式替换
+        QRegularExpression::PatternOptions options = QRegularExpression::NoPatternOption;
+        if (!dialog.caseSensitive()) {
+            options |= QRegularExpression::CaseInsensitiveOption;
+        }
+
+        QRegularExpression regex(searchPattern, options);
+        if (!regex.isValid()) {
+            QMessageBox::warning(this, QStringLiteral("批量编辑"), QStringLiteral("正则表达式无效: %1").arg(regex.errorString()));
+            return;
+        }
+
+        for (auto* node : urlNodes) {
+            const QString oldUrl = node->url();
+            const QString newUrl = oldUrl.replace(regex, replacePattern);
+            if (newUrl != oldUrl) {
+                if (document_.updateUrl(node, newUrl, &error)) {
+                    ++modified;
+                } else {
+                    QMessageBox::warning(this, QStringLiteral("批量编辑失败"), error);
+                    break;
+                }
+            }
+        }
+    } else {
+        // 普通文本替换
+        Qt::CaseSensitivity cs = dialog.caseSensitive() ? Qt::CaseSensitive : Qt::CaseInsensitive;
+
+        for (auto* node : urlNodes) {
+            const QString oldUrl = node->url();
+            QString newUrl = oldUrl;
+            newUrl.replace(searchPattern, replacePattern, cs);
+            if (newUrl != oldUrl) {
+                if (document_.updateUrl(node, newUrl, &error)) {
+                    ++modified;
+                } else {
+                    QMessageBox::warning(this, QStringLiteral("批量编辑失败"), error);
+                    break;
+                }
+            }
+        }
+    }
+
+    refreshTree(currentFolderPath());
+    setStatus(QStringLiteral("批量编辑完成：已修改 %1 个书签").arg(modified));
+
+    if (modified > 0) {
+        QMessageBox::information(this, QStringLiteral("批量编辑"), QStringLiteral("已成功修改 %1 个书签的网址").arg(modified));
+    } else {
+        QMessageBox::information(this, QStringLiteral("批量编辑"), QStringLiteral("没有找到匹配的网址"));
+    }
 }
 
 void MainWindow::deleteSelected()
@@ -780,11 +873,13 @@ void MainWindow::showTableContextMenu(const QPoint& position)
     menu.addSeparator();
     auto* renameAction = menu.addAction(QStringLiteral("重命名"), this, &MainWindow::renameSelected);
     auto* editUrlAction = menu.addAction(QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
+    auto* batchEditAction = menu.addAction(QStringLiteral("批量编辑网址"), this, &MainWindow::batchEditUrls);
     auto* deleteAction = menu.addAction(QStringLiteral("删除"), this, &MainWindow::deleteSelected);
     auto* moveAction = menu.addAction(QStringLiteral("移动到"), this, &MainWindow::moveSelected);
     const bool hasOperationNodes = !selectedOperationNodes().isEmpty();
     renameAction->setEnabled(selectedOperationNodes().size() <= 1);
     editUrlAction->setEnabled(nodes.size() == 1 && nodes[0]->isUrl());
+    batchEditAction->setEnabled(!nodes.isEmpty());
     deleteAction->setEnabled(hasOperationNodes || currentFolder() != nullptr);
     moveAction->setEnabled(hasOperationNodes);
     menu.addSeparator();
@@ -823,6 +918,7 @@ void MainWindow::buildUi()
     auto* newBookmarkAction = toolbar->addAction(style()->standardIcon(QStyle::SP_FileIcon), QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("重命名"), this, &MainWindow::renameSelected);
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("批量编辑"), this, &MainWindow::batchEditUrls);
     toolbar->addAction(style()->standardIcon(QStyle::SP_TrashIcon), QStringLiteral("删除"), this, &MainWindow::deleteSelected);
     toolbar->addAction(style()->standardIcon(QStyle::SP_ArrowRight), QStringLiteral("移动到"), this, &MainWindow::moveSelected);
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("查重"), this, &MainWindow::scanDuplicates);
