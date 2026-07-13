@@ -39,10 +39,23 @@ jobs:
       - name: Test
         shell: pwsh
         run: |
-          & .\build\Release\HealthCheckerTests.exe -o -,txt 2>&1 | Write-Host
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+          $testLog = Join-Path $PWD "health-checker-tests.txt"
+          & .\build\Release\HealthCheckerTests.exe -o $testLog,txt
+          $testExitCode = $LASTEXITCODE
+          if (Test-Path $testLog) {
+            Get-Content $testLog
           }
+          if ($testExitCode -ne 0) {
+            exit $testExitCode
+          }
+
+      - name: Upload failed test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HealthCheckerTests-log
+          path: health-checker-tests.txt
+          if-no-files-found: ignore
 
       - name: Deploy Qt runtime
         shell: pwsh
