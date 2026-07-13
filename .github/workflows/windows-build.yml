@@ -35,7 +35,14 @@ jobs:
       - name: Deploy Qt test runtime
         shell: pwsh
         run: |
-          windeployqt --release --no-translations build\Release\HealthCheckerTests.exe
+          windeployqt --release --no-translations --no-compiler-runtime build\Release\HealthCheckerTests.exe
+          $redistRoot = Join-Path ${env:ProgramFiles} "Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC"
+          $redistVersion = Get-ChildItem $redistRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $redistVersion) {
+            throw "MSVC redistributable directory was not found under $redistRoot"
+          }
+          Copy-Item (Join-Path $redistVersion.FullName "x64\Microsoft.VC143.CRT\*.dll") build\Release\ -Force
+          Get-ChildItem build\Release\*.dll | Select-Object -ExpandProperty Name
 
       - name: Test
         shell: pwsh
