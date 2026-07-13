@@ -33,7 +33,12 @@ jobs:
         run: cmake --build build --config Release
 
       - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
+        shell: pwsh
+        run: |
+          & .\build\Release\HealthCheckerTests.exe -o -,txt
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Deploy Qt runtime
         shell: pwsh
