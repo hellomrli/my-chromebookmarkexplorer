@@ -37,7 +37,7 @@ Updater::Updater(QObject* parent)
     : QObject(parent)
     , network_(new QNetworkAccessManager(this))
 {
-    currentVersion_ = Version::parse(QStringLiteral("0.2.1"));
+    currentVersion_ = Version::parse(QStringLiteral("0.2.2"));
     connect(network_, &QNetworkAccessManager::finished, this, &Updater::onReplyFinished);
 }
 

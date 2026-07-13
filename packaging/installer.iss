@@ -1,5 +1,5 @@
 #define MyAppName "Chrome Bookmark Explorer"
-#define MyAppVersion "0.2.1"
+#define MyAppVersion "0.2.2"
 #define MyAppPublisher "hellomrli"
 #define MyAppExeName "ChromeBookmarkExplorer.exe"
 

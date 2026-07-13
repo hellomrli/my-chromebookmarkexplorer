@@ -52,6 +52,29 @@ QString codeText(int code)
     return code > 0 ? QString::number(code) : QString();
 }
 
+QString healthResultTooltip(const HealthResult& result)
+{
+    if (result.status.isEmpty()) {
+        return {};
+    }
+
+    QStringList lines;
+    lines << QStringLiteral("状态：%1").arg(result.status);
+    if (result.code > 0) {
+        lines << QStringLiteral("HTTP：%1").arg(result.code);
+    }
+    if (result.attempts > 1) {
+        lines << QStringLiteral("尝试次数：%1").arg(result.attempts);
+    }
+    if (!result.finalUrl.isEmpty() && result.finalUrl != result.url) {
+        lines << QStringLiteral("最终网址：%1").arg(result.finalUrl);
+    }
+    if (!result.error.isEmpty()) {
+        lines << QStringLiteral("详情：%1").arg(result.error);
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
 QString normalizedUrlKey(const QString& input)
 {
     const QString trimmed = input.trimmed();
@@ -379,9 +402,16 @@ void MainWindow::refreshList()
         itemTable_->setItem(row, 4, new QTableWidgetItem(node->tagsString()));
 
         const auto result = healthResults_.value(node);
-        itemTable_->setItem(row, 5, new QTableWidgetItem(result.status));
-        itemTable_->setItem(row, 6, new QTableWidgetItem(codeText(result.code)));
-        itemTable_->setItem(row, 7, new QTableWidgetItem(result.elapsedMs > 0 ? QStringLiteral("%1 ms").arg(result.elapsedMs) : QString()));
+        const QString healthTooltip = healthResultTooltip(result);
+        auto* statusItem = new QTableWidgetItem(result.status);
+        auto* codeItem = new QTableWidgetItem(codeText(result.code));
+        auto* elapsedItem = new QTableWidgetItem(result.elapsedMs > 0 ? QStringLiteral("%1 ms").arg(result.elapsedMs) : QString());
+        statusItem->setToolTip(healthTooltip);
+        codeItem->setToolTip(healthTooltip);
+        elapsedItem->setToolTip(healthTooltip);
+        itemTable_->setItem(row, 5, statusItem);
+        itemTable_->setItem(row, 6, codeItem);
+        itemTable_->setItem(row, 7, elapsedItem);
         itemTable_->setItem(row, 8, new QTableWidgetItem(node->formattedDateAdded()));
     }
     setStatus(QStringLiteral("%1：%2 项").arg(folder->path()).arg(folder->children.size()));
@@ -683,17 +713,26 @@ void MainWindow::checkUrls()
         setStatus(QStringLiteral("当前范围没有书签网址"));
         return;
     }
+    for (auto* node : nodes) {
+        healthResults_.remove(node);
+    }
+    refreshList();
     healthTotal_ = nodes.size();
     healthCompleted_ = 0;
     const int maxConcurrent = concurrencySpin_ == nullptr ? health_.maxConcurrent() : concurrencySpin_->value();
+    const int timeoutSeconds = timeoutSpin_ == nullptr ? health_.requestTimeoutMs() / 1000 : timeoutSpin_->value();
     health_.setMaxConcurrent(maxConcurrent);
+    health_.setRequestTimeoutMs(timeoutSeconds * 1000);
     showProgress(QStringLiteral("网址测活"), QStringLiteral("准备检测网址..."), healthTotal_);
-    updateProgress(QStringLiteral("已检测 0 / %1，并发 %2").arg(healthTotal_).arg(maxConcurrent), 0);
+    updateProgress(QStringLiteral("已检测 0 / %1，并发 %2，超时 %3 秒").arg(healthTotal_).arg(maxConcurrent).arg(timeoutSeconds), 0);
     checkButton_->setEnabled(false);
     if (concurrencySpin_ != nullptr) {
         concurrencySpin_->setEnabled(false);
     }
-    setStatus(QStringLiteral("开始测活：%1 个网址，并发 %2").arg(nodes.size()).arg(maxConcurrent));
+    if (timeoutSpin_ != nullptr) {
+        timeoutSpin_->setEnabled(false);
+    }
+    setStatus(QStringLiteral("开始测活：%1 个网址，并发 %2，超时 %3 秒").arg(nodes.size()).arg(maxConcurrent).arg(timeoutSeconds));
     health_.check(nodes);
 }
 
@@ -785,7 +824,7 @@ void MainWindow::deleteFailedUrls()
 
     auto* layout = new QVBoxLayout(&dialog);
     layout->addWidget(new QLabel(
-        QStringLiteral("以下是当前测活结果中的异常链接，默认全选。请取消勾选不想删除的链接，然后点击“确认删除”。"),
+        QStringLiteral("以下是当前测活结果中的异常链接。只有明确返回 404/410 或网址无效的项目默认勾选；超时、证书和服务器临时异常不会默认勾选。"),
         &dialog));
 
     auto* table = new QTableWidget(&dialog);
@@ -809,7 +848,7 @@ void MainWindow::deleteFailedUrls()
 
         auto* checkItem = new QTableWidgetItem();
         checkItem->setFlags((checkItem->flags() | Qt::ItemIsUserCheckable) & ~Qt::ItemIsEditable);
-        checkItem->setCheckState(Qt::Checked);
+        checkItem->setCheckState(result.definitivelyBroken() ? Qt::Checked : Qt::Unchecked);
         setNodeData(checkItem, node);
         table->setItem(row, 0, checkItem);
 
@@ -946,6 +985,9 @@ void MainWindow::onHealthFinished(int total, int failed)
     if (concurrencySpin_ != nullptr) {
         concurrencySpin_->setEnabled(true);
     }
+    if (timeoutSpin_ != nullptr) {
+        timeoutSpin_->setEnabled(true);
+    }
     updateProgress(QStringLiteral("测活完成：已检测 %1 个，异常 %2 个").arg(total).arg(failed), total);
     closeProgress();
     setStatus(QStringLiteral("测活完成：已检测 %1 个，异常 %2 个").arg(total).arg(failed));
@@ -1079,17 +1121,17 @@ void MainWindow::buildUi()
     toolbar->addWidget(profileCombo_);
     connect(profileCombo_, qOverload<int>(&QComboBox::activated), this, [this](int) { loadSelectedProfile(); });
 
-    auto* refreshAction = toolbar->addAction(style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("刷新"), this, &MainWindow::reloadProfiles);
-    auto* openAction = toolbar->addAction(style()->standardIcon(QStyle::SP_DialogOpenButton), QStringLiteral("打开文件"), this, &MainWindow::openBookmarksFile);
-    auto* saveAction = toolbar->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), QStringLiteral("保存"), this, &MainWindow::saveBookmarks);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("刷新"), this, &MainWindow::reloadProfiles);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_DialogOpenButton), QStringLiteral("打开文件"), this, &MainWindow::openBookmarksFile);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), QStringLiteral("保存"), this, &MainWindow::saveBookmarks);
     toolbar->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), QStringLiteral("另存为"), this, &MainWindow::saveBookmarksAs);
     toolbar->addSeparator();
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("导出"), this, &MainWindow::exportBookmarks);
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("导入"), this, &MainWindow::importBookmarks);
 
     toolbar->addSeparator();
-    auto* newFolderAction = toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogNewFolder), QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
-    auto* newBookmarkAction = toolbar->addAction(style()->standardIcon(QStyle::SP_FileIcon), QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogNewFolder), QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
+    toolbar->addAction(style()->standardIcon(QStyle::SP_FileIcon), QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("重命名"), this, &MainWindow::renameSelected);
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
     toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("批量编辑"), this, &MainWindow::batchEditUrls);
@@ -1113,6 +1155,14 @@ void MainWindow::buildUi()
     concurrencySpin_->setToolTip(QStringLiteral("同时测活的网址数量；数值越大速度越快，但也更容易触发站点限速"));
     concurrencySpin_->setMaximumWidth(72);
     toolbar->addWidget(concurrencySpin_);
+
+    toolbar->addWidget(new QLabel(QStringLiteral(" 超时(秒) ")));
+    timeoutSpin_ = new QSpinBox(this);
+    timeoutSpin_->setRange(5, 60);
+    timeoutSpin_->setValue(health_.requestTimeoutMs() / 1000);
+    timeoutSpin_->setToolTip(QStringLiteral("单次请求超时；瞬时网络故障最多会再重试一次"));
+    timeoutSpin_->setMaximumWidth(64);
+    toolbar->addWidget(timeoutSpin_);
 
     checkButton_ = new QPushButton(style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("网址测活"), this);
     toolbar->addWidget(checkButton_);

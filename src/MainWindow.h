@@ -79,6 +79,7 @@ private:
     QLineEdit* searchEdit_ = nullptr;
     QCheckBox* includeSubfolders_ = nullptr;
     QSpinBox* concurrencySpin_ = nullptr;
+    QSpinBox* timeoutSpin_ = nullptr;
     QPushButton* checkButton_ = nullptr;
     QProgressDialog* progressDialog_ = nullptr;
 
