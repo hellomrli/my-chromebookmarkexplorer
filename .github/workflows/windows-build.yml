@@ -48,17 +48,8 @@ jobs:
           Get-ChildItem build\Release\*.dll | Select-Object -ExpandProperty Name
 
       - name: Test
-        shell: pwsh
-        run: |
-          $testLog = Join-Path $PWD "health-checker-tests.txt"
-          & .\build\Release\HealthCheckerTests.exe -o $testLog,txt
-          $testExitCode = $LASTEXITCODE
-          if (Test-Path $testLog) {
-            Get-Content $testLog
-          }
-          if ($testExitCode -ne 0) {
-            exit $testExitCode
-          }
+        shell: cmd
+        run: build\Release\HealthCheckerTests.exe -v2
 
       - name: Upload failed test log
         if: failure()
