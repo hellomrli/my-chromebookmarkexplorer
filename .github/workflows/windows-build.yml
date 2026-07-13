@@ -34,7 +34,9 @@ jobs:
 
       - name: Deploy Qt test runtime
         shell: pwsh
-        run: windeployqt --release --no-translations --no-compiler-runtime build\Release\HealthCheckerTests.exe
+        run: |
+          windeployqt --release --no-translations --no-compiler-runtime build\Release\HealthCheckerTests.exe
+          Copy-Item "$env:VCToolsRedistDir\x64\Microsoft.VC143.CRT\*.dll" build\Release\ -Force
 
       - name: Test
         shell: pwsh
