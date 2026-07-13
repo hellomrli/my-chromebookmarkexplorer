@@ -32,10 +32,14 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
+      - name: Deploy Qt test runtime
+        shell: pwsh
+        run: windeployqt --release --no-translations --no-compiler-runtime build\Release\HealthCheckerTests.exe
+
       - name: Test
         shell: pwsh
         run: |
-          & .\build\Release\HealthCheckerTests.exe -o -,txt
+          & .\build\Release\HealthCheckerTests.exe -o -,txt 2>&1 | Write-Host
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
