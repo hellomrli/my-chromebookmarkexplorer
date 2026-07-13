@@ -48,8 +48,13 @@ jobs:
           Get-ChildItem build\Release\*.dll | Select-Object -ExpandProperty Name
 
       - name: Test
-        shell: cmd
-        run: build\Release\HealthCheckerTests.exe -v2
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath ".\build\Release\HealthCheckerTests.exe" -ArgumentList "-v2" -NoNewWindow -Wait -PassThru
+          Write-Host "HealthCheckerTests exit code: $($process.ExitCode)"
+          if ($process.ExitCode -ne 0) {
+            exit $process.ExitCode
+          }
 
       - name: Upload failed test log
         if: failure()
