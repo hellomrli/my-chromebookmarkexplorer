@@ -12,6 +12,8 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 include(CTest)
 
 set(EXPLORER_SOURCES
+    src/FaviconLoader.h
+    src/FaviconLoader.cpp
     src/BookmarkDragDrop.h
     src/BookmarkDragDrop.cpp
     src/BookmarkIconView.h
@@ -98,9 +100,14 @@ if (BUILD_TESTING)
     target_link_libraries(BookmarkExplorerTests PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
     add_test(NAME BookmarkExplorerTests COMMAND BookmarkExplorerTests
         -o ${CMAKE_CURRENT_BINARY_DIR}/BookmarkExplorerTests.txt,txt -o -,txt)
-    set_target_properties(HealthCheckerTests BookmarkDocumentTests BookmarkExplorerTests
+    qt_add_executable(FaviconLoaderTests tests/FaviconLoaderTest.cpp src/FaviconLoader.h src/FaviconLoader.cpp)
+    target_include_directories(FaviconLoaderTests PRIVATE src)
+    target_link_libraries(FaviconLoaderTests PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
+    add_test(NAME FaviconLoaderTests COMMAND FaviconLoaderTests
+        -o ${CMAKE_CURRENT_BINARY_DIR}/FaviconLoaderTests.txt,txt -o -,txt)
+    set_target_properties(HealthCheckerTests BookmarkDocumentTests BookmarkExplorerTests FaviconLoaderTests
         PROPERTIES WIN32_EXECUTABLE FALSE)
-    set_tests_properties(HealthCheckerTests BookmarkDocumentTests BookmarkExplorerTests
+    set_tests_properties(HealthCheckerTests BookmarkDocumentTests BookmarkExplorerTests FaviconLoaderTests
         PROPERTIES TIMEOUT 120)
-    set_tests_properties(BookmarkExplorerTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    set_tests_properties(BookmarkExplorerTests FaviconLoaderTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

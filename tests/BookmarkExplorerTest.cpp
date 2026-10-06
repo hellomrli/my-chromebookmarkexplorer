@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "BookmarkIconView.h"
 #include "BookmarkDragDrop.h"
+#include "FaviconLoader.h"
 
 #include <QAction>
 #include <QApplication>
@@ -102,6 +103,32 @@ private slots:
         QCOMPARE(tree_->currentItem()->data(0, BookmarkDragDrop::NodeIdRole).toString(), QStringLiteral("11"));
         QCOMPARE(visibleIds(), QStringList({QStringLiteral("20")}));
         QVERIFY(!window_->windowTitle().endsWith(QStringLiteral(" *")));
+    }
+
+    void faviconUpdatesBothViewsWithoutResettingSelection()
+    {
+        auto* loader = window_->findChild<FaviconLoader*>();
+        auto* table = window_->findChild<QTableWidget*>(QStringLiteral("bookmarkDetails"));
+        QVERIFY(loader);
+        QVERIFY(table);
+        icons_->item(0)->setSelected(true);
+        icons_->item(2)->setSelected(true);
+        table->item(2, 0)->setCheckState(Qt::Checked);
+        const auto folderIcon = icons_->item(1)->icon().cacheKey();
+        QPixmap pixmap(48, 48);
+        pixmap.fill(Qt::red);
+        const QIcon favicon(pixmap);
+        loader->iconReady(QStringLiteral("https://alpha.example/"), favicon);
+        QCOMPARE(icons_->item(0)->icon().cacheKey(), favicon.cacheKey());
+        QCOMPARE(table->item(0, 1)->icon().cacheKey(), favicon.cacheKey());
+        QCOMPARE(icons_->item(1)->icon().cacheKey(), folderIcon);
+        QCOMPARE(icons_->selectedNodeIds(), QStringList({QStringLiteral("10"), QStringLiteral("12")}));
+        QCOMPARE(table->item(2, 0)->checkState(), Qt::Checked);
+        QVERIFY(!window_->windowTitle().endsWith(QStringLiteral(" *")));
+        tree_->setCurrentItem(folder(QStringLiteral("14")));
+        loader->iconReady(QStringLiteral("https://alpha.example/"), favicon);
+        QCOMPARE(icons_->count(), 0);
+        QCOMPARE(table->rowCount(), 0);
     }
 
     void doubleClickFolder()

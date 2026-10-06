@@ -41,7 +41,7 @@ jobs:
       - name: Core bookmark tests
         shell: pwsh
         run: |
-          ctest --test-dir build -C Release --verbose --no-tests=error -R '^Bookmark(Document|Explorer)Tests$' --output-junit core-tests.xml
+          ctest --test-dir build -C Release --verbose --no-tests=error -R '^(Bookmark(Document|Explorer)|FaviconLoader)Tests$' --output-junit core-tests.xml
           exit $LASTEXITCODE
 
       - name: Health checker tests

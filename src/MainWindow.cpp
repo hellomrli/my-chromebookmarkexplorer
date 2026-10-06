@@ -5,6 +5,7 @@
 #include "ImportExport.h"
 #include "Logger.h"
 #include "TagDialog.h"
+#include "FaviconLoader.h"
 
 #include <QAction>
 #include <QApplication>
@@ -122,6 +123,9 @@ MainWindow::MainWindow(QWidget* parent, bool backgroundServices)
         LOG_INFO(QStringLiteral("Application started"));
     }
 
+    faviconLoader_ = new FaviconLoader(this);
+    faviconLoader_->setNetworkEnabled(backgroundServices);
+    connect(faviconLoader_, &FaviconLoader::iconReady, this, &MainWindow::updateSiteIcon);
     buildUi();
     connect(&health_, &HealthChecker::resultReady, this, &MainWindow::onHealthResult);
     connect(&health_, &HealthChecker::finished, this, &MainWindow::onHealthFinished);
@@ -1671,6 +1675,8 @@ QIcon MainWindow::nodeIcon(const BookmarkNode* node)
         const QIcon icon(QStringLiteral(":/icons/folder.png"));
         return icon.isNull() ? style()->standardIcon(QStyle::SP_DirIcon) : icon;
     }
+    const QIcon favicon = faviconLoader_->iconForUrl(node->url());
+    if (!favicon.isNull()) return favicon;
     QString host = QUrl(node->url()).host().toLower();
     if (host.startsWith(QStringLiteral("www."))) host.remove(0, 4);
     if (host.isEmpty()) host = QUrl(node->url()).scheme();
@@ -1696,6 +1702,20 @@ QIcon MainWindow::nodeIcon(const BookmarkNode* node)
     const QIcon icon(pixmap);
     siteIcons_.insert(host, icon);
     return icon;
+}
+
+void MainWindow::updateSiteIcon(const QString& site, const QIcon& icon)
+{
+    for (int index = 0; index < iconView_->count(); ++index) {
+        auto* item = iconView_->item(index);
+        const auto* node = document_.nodeById(item->data(NodeRole).toString());
+        if (node && !node->isFolder() && FaviconLoader::siteKey(node->url()) == site) item->setIcon(icon);
+    }
+    for (int row = 0; row < itemTable_->rowCount(); ++row) {
+        auto* item = itemTable_->item(row, 1);
+        const auto* node = nodeFromTableItem(item);
+        if (node && !node->isFolder() && FaviconLoader::siteKey(node->url()) == site) item->setIcon(icon);
+    }
 }
 
 QMimeData* MainWindow::createDrag(const QStringList& ids) const

@@ -12,6 +12,7 @@
 #include <QStringList>
 
 class BookmarkIconView;
+class FaviconLoader;
 class BookmarkFolderTree;
 class BookmarkPathButton;
 class QStackedWidget;
@@ -75,6 +76,7 @@ private:
     Updater updater_;
     QHash<BookmarkNode*, HealthResult> healthResults_;
     QHash<QString, QIcon> siteIcons_;
+    FaviconLoader* faviconLoader_ = nullptr;
     bool startupLoading_ = true;
     bool treeOperation_ = false;
     int loadedProfileIndex_ = -1;
@@ -106,6 +108,7 @@ private:
     QStringList selectedListIds() const;
     QString currentFolderId() const;
     QIcon nodeIcon(const BookmarkNode* node);
+    void updateSiteIcon(const QString& site, const QIcon& icon);
     QMimeData* createDrag(const QStringList& ids) const;
     bool handleDrop(const QMimeData* mime, const QString& targetId, int index, bool commit);
     BookmarkNode* currentFolder() const;

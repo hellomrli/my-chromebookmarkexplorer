@@ -11,6 +11,7 @@ Windows 原生版 Chrome 收藏夹管理工具，使用 **C++17 + Qt6** 编写�
 - 自动识别 Chrome Profile：`Default`、`Profile 1`、`Profile 2`
 - 打开任意 Chrome `Bookmarks` 文件
 - 文件夹树 + 图标网格／详细列表切换，提供路径导航和返回上级
+- 书签优先显示网站自身图标（favicon），图标网格和详细列表同步更新；加载失败时保留域名首字母占位图
 - 图标视图支持多选拖放、目录内排序，以及拖入文件夹树／路径按钮跨目录移动
 - 搜索期间仍可拖入明确的文件夹目标；过滤列表不支持排序，也不能把当前目录项目拖回当前路径以改变顺序
 - 拖放只修改内存中的文档，确认后按 `Ctrl+S` 保存；非法移动或过期拖放不会部分生效
@@ -28,6 +29,14 @@ Windows 原生版 Chrome 收藏夹管理工具，使用 **C++17 + Qt6** 编写�
 - 保存前自动备份 `Bookmarks`
 - 批量网址测活：状态、HTTP 状态码、耗时、错误信息，并可设置测活并发数
 - 测活后可处理异常链接：删除前会弹出异常链接清单，默认全选，可取消部分链接后确认删除；也可将异常链接移动到指定文件夹
+
+## 网站图标
+
+打开文件夹后，会在后台读取其中网站的 `/favicon.ico`；若不可用，再从网站首页查找声明的图标（包括相对路径和 Apple Touch Icon）。不会阻塞浏览、搜索或拖放，也不会修改书签文件。
+
+图标仅向对应网站及其声明的图标地址请求，不使用第三方图标查询服务，不发送书签的完整路径、查询参数或登录凭据。每次最多并发加载 4 个网站，单次请求最多等待 6 秒，并限制下载大小。非 HTTP(S) 网址不发起请求；网站无法访问、没有图标或格式不受当前 Qt 支持时继续显示占位图。
+
+成功加载的图标保存在系统应用缓存目录的 `favicons` 子目录，之后可直接使用（包括离线使用）；30 天后在后台尝试刷新，失败时仍保留旧图标。删除该目录即可清除磁盘缓存。
 
 ## Windows 构建
 
@@ -69,9 +78,9 @@ ChromeBookmarkExplorer-windows-x64.zip
 
 解压后里面就是 `ChromeBookmarkExplorer.exe` 和 Qt 运行依赖。请保留整个解压目录，不要只复制 exe。
 
-试用版本以 GitHub **Pre-release** 单独发布，不覆盖正式版本，也不会通过正式版自动更新推送。建议先复制 Chrome 的 `Bookmarks` 文件，用副本测试拖放、搜索及保存，确认正常后再处理实际书签。
+当前试用版本：[v0.3.0-rc.2（网站 LOGO 试用版）](https://github.com/hellomrli/my-chromebookmarkexplorer/releases/tag/v0.3.0-rc.2)。试用版本以 GitHub **Pre-release** 单独发布，不覆盖正式版本，也不会通过正式版自动更新推送。建议先复制 Chrome 的 `Bookmarks` 文件，用副本测试图标加载、拖放、搜索及保存，确认正常后再处理实际书签。
 
-Windows 云构建中的 `BookmarkDocumentTests` 和 `BookmarkExplorerTests` 必须通过才能打包。`HealthCheckerTests` 目前单独运行并保留结果，失败会标记为已知限制，不等同于全套测试通过；完整日志和 JUnit 报告见 `windows-test-results` artifact。
+Windows 云构建中的 `BookmarkDocumentTests`、`BookmarkExplorerTests` 和 `FaviconLoaderTests` 必须通过才能打包。`HealthCheckerTests` 目前单独运行并保留结果，失败会标记为已知限制，不等同于全套测试通过；完整日志和 JUnit 报告见 `windows-test-results` artifact。
 
 ## 打包安装包
 
