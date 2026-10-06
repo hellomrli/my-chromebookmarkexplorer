@@ -70,6 +70,7 @@ jobs:
           name: windows-test-results
           path: |
             build/*-tests.xml
+            build/*Tests.txt
             build/Testing/Temporary/LastTest.log
           if-no-files-found: warn
 
@@ -79,6 +80,30 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist\ChromeBookmarkExplorer | Out-Null
           Copy-Item build\Release\ChromeBookmarkExplorer.exe dist\ChromeBookmarkExplorer\ -Force
           windeployqt --release --no-translations dist\ChromeBookmarkExplorer\ChromeBookmarkExplorer.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vsInstall) { throw "Visual Studio C++ installation not found" }
+          $crt = Get-ChildItem "$vsInstall\VC\Redist\MSVC" -Directory -Recurse -Filter 'Microsoft.VC*.CRT' |
+            Where-Object { $_.FullName -match '\\x64\\' } |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (!$crt) { throw "MSVC x64 runtime directory not found" }
+          Copy-Item "$($crt.FullName)\*.dll" dist\ChromeBookmarkExplorer\ -Force
+          foreach ($file in @('ChromeBookmarkExplorer.exe', 'Qt6Core.dll', 'Qt6Widgets.dll', 'Qt6Network.dll', 'platforms\qwindows.dll', 'msvcp140.dll', 'vcruntime140.dll')) {
+            if (!(Test-Path "dist\ChromeBookmarkExplorer\$file")) { throw "Missing runtime file: $file" }
+          }
+
+      - name: Packaged app startup smoke test
+        shell: pwsh
+        run: |
+          $app = Start-Process -FilePath "$PWD\dist\ChromeBookmarkExplorer\ChromeBookmarkExplorer.exe" -PassThru
+          try {
+            Start-Sleep -Seconds 5
+            if ($app.HasExited) { throw "Packaged app exited unexpectedly: $($app.ExitCode)" }
+            "Packaged Windows app remained running for 5 seconds." >> $env:GITHUB_STEP_SUMMARY
+          } finally {
+            if (!$app.HasExited) { Stop-Process -Id $app.Id }
+          }
 
       - name: Archive
         shell: pwsh

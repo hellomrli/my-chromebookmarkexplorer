@@ -82,19 +82,22 @@ if (BUILD_TESTING)
         target_compile_options(HealthCheckerTests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 
-    add_test(NAME HealthCheckerTests COMMAND HealthCheckerTests)
+    add_test(NAME HealthCheckerTests COMMAND HealthCheckerTests
+        -o ${CMAKE_CURRENT_BINARY_DIR}/HealthCheckerTests.txt,txt -o -,txt)
 
     qt_add_executable(BookmarkDocumentTests
         tests/BookmarkDocumentTest.cpp
         src/BookmarkDocument.cpp src/BookmarkNode.cpp src/ChromeProfiles.cpp)
     target_include_directories(BookmarkDocumentTests PRIVATE src)
     target_link_libraries(BookmarkDocumentTests PRIVATE Qt6::Test)
-    add_test(NAME BookmarkDocumentTests COMMAND BookmarkDocumentTests)
+    add_test(NAME BookmarkDocumentTests COMMAND BookmarkDocumentTests
+        -o ${CMAKE_CURRENT_BINARY_DIR}/BookmarkDocumentTests.txt,txt -o -,txt)
 
     qt_add_executable(BookmarkExplorerTests tests/BookmarkExplorerTest.cpp ${EXPLORER_SOURCES})
     target_include_directories(BookmarkExplorerTests PRIVATE src)
     target_link_libraries(BookmarkExplorerTests PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
-    add_test(NAME BookmarkExplorerTests COMMAND BookmarkExplorerTests)
+    add_test(NAME BookmarkExplorerTests COMMAND BookmarkExplorerTests
+        -o ${CMAKE_CURRENT_BINARY_DIR}/BookmarkExplorerTests.txt,txt -o -,txt)
     set_target_properties(HealthCheckerTests BookmarkDocumentTests BookmarkExplorerTests
         PROPERTIES WIN32_EXECUTABLE FALSE)
     set_tests_properties(HealthCheckerTests BookmarkDocumentTests BookmarkExplorerTests
