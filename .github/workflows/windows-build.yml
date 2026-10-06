@@ -27,19 +27,51 @@ jobs:
 
       - name: Configure
         shell: pwsh
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
 
       - name: Build
         run: cmake --build build --config Release
 
-      - name: Test
+      - name: Deploy test runtime
         shell: pwsh
         run: |
-          $testProcess = Start-Process -FilePath "ctest" -ArgumentList "--test-dir", "build", "-C", "Release", "--output-on-failure" -NoNewWindow -Wait -PassThru
-          if ($testProcess.ExitCode -ne 0) {
-            Write-Warning "Windows network tests failed; continuing packaging because the application build succeeded and the same suite passes on Linux."
+          windeployqt --release --no-translations build\Release\BookmarkExplorerTests.exe
+          exit $LASTEXITCODE
+
+      - name: Core bookmark tests
+        shell: pwsh
+        run: |
+          ctest --test-dir build -C Release --verbose --no-tests=error -R '^Bookmark(Document|Explorer)Tests$' --output-junit core-tests.xml
+          exit $LASTEXITCODE
+
+      - name: Health checker tests
+        id: health-tests
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          ctest --test-dir build -C Release --verbose --no-tests=error -R '^HealthCheckerTests$' --output-junit health-tests.xml
+          exit $LASTEXITCODE
+
+      - name: Test summary
+        if: always()
+        shell: pwsh
+        env:
+          HEALTH_TEST_OUTCOME: ${{ steps.health-tests.outcome }}
+        run: |
+          "Health checker tests: $env:HEALTH_TEST_OUTCOME (currently non-blocking). Core bookmark tests must pass before packaging." >> $env:GITHUB_STEP_SUMMARY
+          if ($env:HEALTH_TEST_OUTCOME -eq 'failure') {
+            Write-Warning "Health checker tests failed. See test-results; this build is not fully validated."
           }
-          exit 0
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-results
+          path: |
+            build/*-tests.xml
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
 
       - name: Deploy Qt runtime
         shell: pwsh

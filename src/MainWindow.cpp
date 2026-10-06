@@ -1,4 +1,6 @@
 #include "MainWindow.h"
+#include "BookmarkIconView.h"
+#include "BookmarkDragDrop.h"
 #include "BatchEditDialog.h"
 #include "ImportExport.h"
 #include "Logger.h"
@@ -41,11 +43,19 @@
 #include <QAbstractItemView>
 #include <QIcon>
 #include <QStyle>
+#include <QActionGroup>
+#include <QCryptographicHash>
+#include <QHBoxLayout>
+#include <QPainter>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QStackedWidget>
+#include <QTreeWidgetItemIterator>
 
 #include <algorithm>
 
 namespace {
-constexpr int NodeRole = Qt::UserRole + 1;
+constexpr int NodeRole = BookmarkDragDrop::NodeIdRole;
 
 QString codeText(int code)
 {
@@ -99,16 +109,18 @@ QString normalizedUrlKey(const QString& input)
 }
 }
 
-MainWindow::MainWindow(QWidget* parent)
+MainWindow::MainWindow(QWidget* parent, bool backgroundServices)
     : QMainWindow(parent)
 {
-    // 初始化日志系统
-    const QString logDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir().mkpath(logDir);
-    const QString logFile = logDir + QStringLiteral("/ChromeBookmarkExplorer.log");
-    Logger::instance().setLogFile(logFile);
-    Logger::instance().setLevel(Logger::Level::Info);
-    LOG_INFO(QStringLiteral("Application started"));
+    // 测试窗口不扫描真实 Profile，也不进行网络更新检查。
+    if (backgroundServices) {
+        const QString logDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        QDir().mkpath(logDir);
+        const QString logFile = logDir + QStringLiteral("/ChromeBookmarkExplorer.log");
+        Logger::instance().setLogFile(logFile);
+        Logger::instance().setLevel(Logger::Level::Info);
+        LOG_INFO(QStringLiteral("Application started"));
+    }
 
     buildUi();
     connect(&health_, &HealthChecker::resultReady, this, &MainWindow::onHealthResult);
@@ -118,10 +130,10 @@ MainWindow::MainWindow(QWidget* parent)
         LOG_WARNING(QStringLiteral("Update check failed: %1").arg(error));
         setStatus(QStringLiteral("检查更新失败: %1").arg(error));
     });
-    reloadProfiles();
-
-    // 启动时自动检查更新
-    QTimer::singleShot(2000, &updater_, &Updater::checkForUpdates);
+    if (backgroundServices) {
+        reloadProfiles();
+        QTimer::singleShot(2000, &updater_, &Updater::checkForUpdates);
+    }
 }
 
 void MainWindow::reloadProfiles()
@@ -173,7 +185,7 @@ void MainWindow::loadSelectedProfile()
         return;
     }
     QString error;
-    if (!document_.load(profiles_[index].bookmarksPath, &error)) {
+    if (!loadBookmarks(profiles_[index].bookmarksPath, &error)) {
         QSignalBlocker blocker(profileCombo_);
         profileCombo_->setCurrentIndex(loadedProfileIndex_);
         LOG_ERROR(QStringLiteral("Failed to load profile: %1, error: %2").arg(profiles_[index].label(), error));
@@ -200,7 +212,7 @@ void MainWindow::openBookmarksFile()
         return;
     }
     QString error;
-    if (!document_.load(path, &error)) {
+    if (!loadBookmarks(path, &error)) {
         LOG_ERROR(QStringLiteral("Failed to open bookmarks file: %1, error: %2").arg(path, error));
         QMessageBox::critical(this, QStringLiteral("打开失败"), error);
         return;
@@ -317,7 +329,7 @@ void MainWindow::importBookmarks()
         delete root;
     }
 
-    refreshTree(currentFolderPath());
+    refreshTree(currentFolderId());
     LOG_INFO(QStringLiteral("Imported %1 items from: %2").arg(imported).arg(filePath));
     QMessageBox::information(this, QStringLiteral("导入"), QStringLiteral("成功导入 %1 个项目").arg(imported));
     setStatus(QStringLiteral("已导入 %1 个项目").arg(imported));
@@ -355,66 +367,92 @@ bool MainWindow::saveBookmarksInternal(bool forceChoosePath)
     return true;
 }
 
+bool MainWindow::loadBookmarks(const QString& path, QString* error)
+{
+    if (health_.isRunning()) {
+        if (error) *error = QStringLiteral("请等待网址测活完成后再切换文件");
+        return false;
+    }
+    if (!document_.load(path, error)) return false;
+    {
+        QSignalBlocker blocker(folderTree_);
+        folderTree_->clear();
+    }
+    itemTable_->setRowCount(0);
+    iconView_->clear();
+    displayedFolderId_.clear();
+    searchEdit_->clear();
+    healthResults_.clear();
+    siteIcons_.clear();
+    refreshTree();
+    return true;
+}
+
 void MainWindow::refreshList()
 {
-    itemTable_->setRowCount(0);
     auto* folder = currentFolder();
-    if (folder == nullptr) {
-        return;
-    }
-
+    const QString folderId = folder ? folder->id() : QString();
+    const bool sameFolder = folderId == displayedFolderId_;
+    const auto selected = sameFolder ? selectedListIds() : QStringList();
+    const int iconScroll = sameFolder ? iconView_->verticalScrollBar()->value() : 0;
+    const int tableScroll = sameFolder ? itemTable_->verticalScrollBar()->value() : 0;
+    itemTable_->setRowCount(0);
+    iconView_->clear();
+    displayedFolderId_ = folderId;
     const QString query = searchEdit_->text().trimmed();
+    iconView_->setFolderContext(folderId, !query.isEmpty());
+    iconView_->setEmptyText(folder
+        ? (query.isEmpty() ? QStringLiteral("这个文件夹是空的\n拖入书签，或右键新建文件夹 / 书签")
+                           : QStringLiteral("没有匹配的书签\n清除搜索后可拖动调整顺序"))
+        : QStringLiteral("选择 Chrome Profile 或打开 Bookmarks 文件\n以文件夹和图标整理你的书签"));
+    if (!sameFolder) updateNavigation();
+    if (!folder) return;
 
-    // 预先计算要显示的行数，避免频繁调用 insertRow
     QVector<BookmarkNode*> visibleNodes;
-    visibleNodes.reserve(folder->children.size());
-
-    for (const auto& child : folder->children) {
-        BookmarkNode* node = child.get();
-        if (!query.isEmpty()
-            && !node->name().contains(query, Qt::CaseInsensitive)
-            && !node->url().contains(query, Qt::CaseInsensitive)) {
-            continue;
-        }
-        visibleNodes.push_back(node);
+    for (int index = 0; index < static_cast<int>(folder->children.size()); ++index) {
+        auto* node = folder->children[index].get();
+        if (!query.isEmpty() && !node->name().contains(query, Qt::CaseInsensitive)
+            && !node->url().contains(query, Qt::CaseInsensitive)) continue;
+        visibleNodes.append(node);
+        auto* item = new QListWidgetItem(nodeIcon(node), node->name(), iconView_);
+        item->setSizeHint(QSize(120, 104));
+        item->setData(NodeRole, node->id());
+        item->setData(BookmarkDragDrop::FolderRole, node->isFolder());
+        item->setData(BookmarkDragDrop::SourceIndexRole, index);
+        item->setToolTip(node->name() + QLatin1Char('\n')
+            + (node->isFolder() ? QStringLiteral("文件夹 · %1 项").arg(node->children.size()) : node->url())
+            + QLatin1Char('\n') + healthResultTooltip(healthResults_.value(node)));
     }
-
-    // 一次性设置行数，避免多次重新分配
     itemTable_->setRowCount(visibleNodes.size());
-
     for (int row = 0; row < visibleNodes.size(); ++row) {
-        BookmarkNode* node = visibleNodes[row];
-
-        // 勾选框
+        auto* node = visibleNodes[row];
         auto* checkItem = new QTableWidgetItem();
         checkItem->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
         checkItem->setCheckState(Qt::Unchecked);
         itemTable_->setItem(row, 0, checkItem);
-
-        // 名称（带图标）
         auto* nameItem = new QTableWidgetItem(node->name());
-        nameItem->setIcon(node->isFolder() ? QIcon(":/icons/folder.png") : QIcon(":/icons/bookmark.png"));
+        nameItem->setIcon(nodeIcon(node));
         setNodeData(nameItem, node);
         itemTable_->setItem(row, 1, nameItem);
-
         itemTable_->setItem(row, 2, new QTableWidgetItem(node->displayType()));
         itemTable_->setItem(row, 3, new QTableWidgetItem(node->url()));
         itemTable_->setItem(row, 4, new QTableWidgetItem(node->tagsString()));
-
         const auto result = healthResults_.value(node);
-        const QString healthTooltip = healthResultTooltip(result);
-        auto* statusItem = new QTableWidgetItem(result.status);
-        auto* codeItem = new QTableWidgetItem(codeText(result.code));
-        auto* elapsedItem = new QTableWidgetItem(result.elapsedMs > 0 ? QStringLiteral("%1 ms").arg(result.elapsedMs) : QString());
-        statusItem->setToolTip(healthTooltip);
-        codeItem->setToolTip(healthTooltip);
-        elapsedItem->setToolTip(healthTooltip);
-        itemTable_->setItem(row, 5, statusItem);
-        itemTable_->setItem(row, 6, codeItem);
-        itemTable_->setItem(row, 7, elapsedItem);
+        const QStringList healthValues = {result.status, codeText(result.code),
+            result.elapsedMs > 0 ? QStringLiteral("%1 ms").arg(result.elapsedMs) : QString()};
+        for (int column = 0; column < healthValues.size(); ++column) {
+            auto* item = new QTableWidgetItem(healthValues[column]);
+            item->setToolTip(healthResultTooltip(result));
+            itemTable_->setItem(row, column + 5, item);
+        }
         itemTable_->setItem(row, 8, new QTableWidgetItem(node->formattedDateAdded()));
     }
-    setStatus(QStringLiteral("%1：%2 项").arg(folder->path()).arg(folder->children.size()));
+    restoreListSelection(selected);
+    iconView_->verticalScrollBar()->setValue(iconScroll);
+    itemTable_->verticalScrollBar()->setValue(tableScroll);
+    setStatus(query.isEmpty()
+        ? QStringLiteral("%1 · %2 项   拖入文件夹以移动，拖到图标边缘以排序").arg(folder->path()).arg(visibleNodes.size())
+        : QStringLiteral("找到 %1 项 · 搜索时仅支持拖入明确的文件夹，清除搜索后可排序").arg(visibleNodes.size()));
 }
 
 void MainWindow::newFolder()
@@ -429,7 +467,7 @@ void MainWindow::newFolder()
         return;
     }
     document_.addFolder(folder, name.trimmed());
-    refreshTree(folder->path());
+    refreshTree(folder->id());
 }
 
 void MainWindow::newBookmark()
@@ -448,7 +486,7 @@ void MainWindow::newBookmark()
         return;
     }
     document_.addBookmark(folder, name.trimmed(), url.trimmed());
-    refreshTree(folder->path());
+    refreshTree(folder->id());
 }
 
 void MainWindow::renameSelected()
@@ -462,7 +500,7 @@ void MainWindow::renameSelected()
     if (node == nullptr) {
         return;
     }
-    const QString fallbackPath = currentFolderPath();
+    const QString fallbackPath = currentFolderId();
     bool ok = false;
     const QString name = QInputDialog::getText(this, QStringLiteral("重命名"), QStringLiteral("新名称："), QLineEdit::Normal, node->name(), &ok);
     if (!ok || name.trimmed().isEmpty()) {
@@ -473,7 +511,7 @@ void MainWindow::renameSelected()
         QMessageBox::warning(this, QStringLiteral("重命名失败"), error);
         return;
     }
-    refreshTree(node->isFolder() ? node->path() : fallbackPath);
+    refreshTree(node->isFolder() ? node->id() : fallbackPath);
 }
 
 void MainWindow::editSelectedUrl()
@@ -496,7 +534,7 @@ void MainWindow::editSelectedUrl()
         QMessageBox::warning(this, QStringLiteral("编辑网址失败"), error);
         return;
     }
-    refreshTree(currentFolderPath());
+    refreshTree(currentFolderId());
 }
 
 void MainWindow::batchEditUrls()
@@ -581,7 +619,7 @@ void MainWindow::batchEditUrls()
         }
     }
 
-    refreshTree(currentFolderPath());
+    refreshTree(currentFolderId());
     setStatus(QStringLiteral("批量编辑完成：已修改 %1 个书签").arg(modified));
 
     if (modified > 0) {
@@ -629,6 +667,7 @@ void MainWindow::editTags()
 
     document_.setDirty(true);
     refreshList();
+    updateDirtyState();
     LOG_INFO(QStringLiteral("Updated tags for %1 bookmarks").arg(urlNodes.size()));
     setStatus(QStringLiteral("已更新 %1 个书签的标签").arg(urlNodes.size()));
 }
@@ -649,7 +688,7 @@ void MainWindow::deleteSelected()
     if (QMessageBox::question(this, QStringLiteral("删除"), QStringLiteral("确认删除 %1 个项目？").arg(nodes.size())) != QMessageBox::Yes) {
         return;
     }
-    const QString previousPath = currentFolderPath();
+    const QString previousPath = currentFolderId();
     QString error;
     for (auto* node : nodes) {
         if (!document_.remove(node, &error)) {
@@ -657,7 +696,7 @@ void MainWindow::deleteSelected()
             break;
         }
     }
-    refreshTree(nearestExistingFolderPath(previousPath));
+    refreshTree(previousPath);
 }
 
 void MainWindow::moveSelected()
@@ -671,15 +710,13 @@ void MainWindow::moveSelected()
     if (target == nullptr) {
         return;
     }
-    const QString previousPath = currentFolderPath();
+    const QString previousPath = currentFolderId();
     QString error;
-    for (auto* node : nodes) {
-        if (!document_.move(node, target, &error)) {
-            QMessageBox::warning(this, QStringLiteral("移动失败"), error);
-            break;
-        }
+    if (!document_.moveNodes(nodes, target, -1, &error)) {
+        QMessageBox::warning(this, QStringLiteral("移动失败"), error);
+        return;
     }
-    refreshTree(nearestExistingFolderPath(previousPath));
+    refreshTree(previousPath);
 }
 
 void MainWindow::openSelectedUrl()
@@ -689,7 +726,7 @@ void MainWindow::openSelectedUrl()
         return;
     }
     if (nodes[0]->isFolder()) {
-        if (auto* item = findFolderItemByPath(nodes[0]->path())) {
+        if (auto* item = findFolderItemById(nodes[0]->id())) {
             folderTree_->setCurrentItem(item);
         }
         return;
@@ -886,7 +923,7 @@ void MainWindow::deleteFailedUrls()
         return;
     }
 
-    const QString previousPath = currentFolderPath();
+    const QString previousPath = currentFolderId();
     int removed = 0;
     QString error;
     for (auto* node : selectedNodes) {
@@ -899,7 +936,7 @@ void MainWindow::deleteFailedUrls()
         }
     }
 
-    refreshTree(nearestExistingFolderPath(previousPath));
+    refreshTree(previousPath);
     setStatus(QStringLiteral("已删除 %1 个异常链接").arg(removed));
 }
 
@@ -916,19 +953,15 @@ void MainWindow::moveFailedUrls()
         return;
     }
 
-    const QString previousPath = currentFolderPath();
-    int moved = 0;
+    const QString previousPath = currentFolderId();
     QString error;
-    for (auto* node : nodes) {
-        if (document_.move(node, target, &error)) {
-            ++moved;
-        } else {
-            QMessageBox::warning(this, QStringLiteral("移动异常链接失败"), error);
-            break;
-        }
+    if (!document_.moveNodes(nodes, target, -1, &error)) {
+        QMessageBox::warning(this, QStringLiteral("移动异常链接失败"), error);
+        return;
     }
+    const int moved = nodes.size();
 
-    refreshTree(nearestExistingFolderPath(previousPath));
+    refreshTree(previousPath);
     setStatus(QStringLiteral("已移动 %1 个异常链接到：%2").arg(moved).arg(target->path()));
 }
 
@@ -1004,6 +1037,7 @@ void MainWindow::showTreeContextMenu(const QPoint& position)
         return;
     }
 
+    treeOperation_ = true;
     QMenu menu(this);
     menu.addAction(QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
     menu.addAction(QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
@@ -1032,76 +1066,56 @@ void MainWindow::showTreeContextMenu(const QPoint& position)
     }
 
     menu.exec(folderTree_->viewport()->mapToGlobal(position));
+    treeOperation_ = false;
 }
 
 void MainWindow::showTableContextMenu(const QPoint& position)
 {
-    auto* item = itemTable_->itemAt(position);
-    if (item != nullptr) {
-        bool rowAlreadySelected = false;
-        const int row = item->row();
-        const auto ranges = itemTable_->selectedRanges();
-        for (const auto& range : ranges) {
-            if (row >= range.topRow() && row <= range.bottomRow()) {
-                rowAlreadySelected = true;
-                break;
-            }
-        }
-        if (!rowAlreadySelected) {
+    QWidget* viewport = views_->currentIndex() == 0 ? iconView_->viewport() : itemTable_->viewport();
+    if (views_->currentIndex() == 0) {
+        auto* item = iconView_->itemAt(position);
+        if (item && !item->isSelected()) {
+            iconView_->clearSelection();
+            iconView_->setCurrentItem(item);
+            item->setSelected(true);
+        } else if (!item) iconView_->clearSelection();
+    } else {
+        auto* item = itemTable_->itemAt(position);
+        if (item && !itemTable_->selectionModel()->isRowSelected(item->row())) {
             itemTable_->clearSelection();
-            itemTable_->selectRow(row);
-        }
+            itemTable_->selectRow(item->row());
+        } else if (!item) itemTable_->clearSelection();
     }
-
     QMenu menu(this);
     const auto nodes = selectedListNodes();
-    auto* openAction = menu.addAction(QStringLiteral("打开网址"), this, &MainWindow::openSelectedUrl);
-    openAction->setEnabled(nodes.size() == 1 && nodes[0]->isUrl());
+    auto* openAction = menu.addAction(QStringLiteral("打开"), this, &MainWindow::openSelectedUrl);
+    openAction->setEnabled(nodes.size() == 1);
     menu.addSeparator();
-
-    // 全选/取消全选勾选框
-    auto* selectAllAction = menu.addAction(QStringLiteral("全选"));
-    connect(selectAllAction, &QAction::triggered, this, [this]() {
-        for (int row = 0; row < itemTable_->rowCount(); ++row) {
-            if (auto* checkItem = itemTable_->item(row, 0)) {
-                checkItem->setCheckState(Qt::Checked);
-            }
-        }
+    menu.addAction(QStringLiteral("全选"), this, [this]() {
+        if (views_->currentIndex() == 0) iconView_->selectAll();
+        else itemTable_->selectAll();
     });
-
-    auto* unselectAllAction = menu.addAction(QStringLiteral("取消全选"));
-    connect(unselectAllAction, &QAction::triggered, this, [this]() {
-        for (int row = 0; row < itemTable_->rowCount(); ++row) {
-            if (auto* checkItem = itemTable_->item(row, 0)) {
-                checkItem->setCheckState(Qt::Unchecked);
-            }
-        }
-    });
-
+    menu.addAction(QStringLiteral("取消选择"), this, [this]() { restoreListSelection({}); });
     menu.addSeparator();
     menu.addAction(QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
     menu.addAction(QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
     menu.addSeparator();
-    auto* renameAction = menu.addAction(QStringLiteral("重命名"), this, &MainWindow::renameSelected);
-    auto* editUrlAction = menu.addAction(QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
-    auto* batchEditAction = menu.addAction(QStringLiteral("批量编辑网址"), this, &MainWindow::batchEditUrls);
-    auto* tagsAction = menu.addAction(QStringLiteral("编辑标签"), this, &MainWindow::editTags);
-    auto* deleteAction = menu.addAction(QStringLiteral("删除"), this, &MainWindow::deleteSelected);
-    auto* moveAction = menu.addAction(QStringLiteral("移动到"), this, &MainWindow::moveSelected);
-    const bool hasOperationNodes = !selectedOperationNodes().isEmpty();
-    renameAction->setEnabled(selectedOperationNodes().size() <= 1);
-    editUrlAction->setEnabled(nodes.size() == 1 && nodes[0]->isUrl());
-    batchEditAction->setEnabled(!nodes.isEmpty());
-    tagsAction->setEnabled(!nodes.isEmpty());
-    deleteAction->setEnabled(hasOperationNodes || currentFolder() != nullptr);
-    moveAction->setEnabled(hasOperationNodes);
+    auto* rename = menu.addAction(QStringLiteral("重命名"), this, &MainWindow::renameSelected);
+    auto* edit = menu.addAction(QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
+    auto* batch = menu.addAction(QStringLiteral("批量编辑网址"), this, &MainWindow::batchEditUrls);
+    auto* tags = menu.addAction(QStringLiteral("编辑标签"), this, &MainWindow::editTags);
+    auto* remove = menu.addAction(QStringLiteral("删除"), this, &MainWindow::deleteSelected);
+    auto* move = menu.addAction(QStringLiteral("移动到"), this, &MainWindow::moveSelected);
+    rename->setEnabled(nodes.size() == 1);
+    edit->setEnabled(nodes.size() == 1 && nodes[0]->isUrl());
+    batch->setEnabled(!nodes.isEmpty());
+    tags->setEnabled(!nodes.isEmpty());
+    remove->setEnabled(!nodes.isEmpty());
+    move->setEnabled(!nodes.isEmpty());
     menu.addSeparator();
     menu.addAction(QStringLiteral("网址测活"), this, &MainWindow::checkUrls);
     menu.addAction(QStringLiteral("查找重复书签"), this, &MainWindow::scanDuplicates);
-    menu.addAction(QStringLiteral("删除异常链接"), this, &MainWindow::deleteFailedUrls);
-    menu.addAction(QStringLiteral("移动异常链接"), this, &MainWindow::moveFailedUrls);
-
-    menu.exec(itemTable_->viewport()->mapToGlobal(position));
+    menu.exec(viewport->mapToGlobal(position));
 }
 
 void MainWindow::buildUi()
@@ -1109,147 +1123,209 @@ void MainWindow::buildUi()
     setWindowTitle(QStringLiteral("Chrome Bookmark Explorer"));
     setWindowIcon(QIcon(":/icons/app.png"));
     resize(1200, 760);
-
-    auto* toolbar = addToolBar(QStringLiteral("工具栏"));
-    toolbar->setMovable(false);
-    toolbar->setIconSize(QSize(20, 20));
-    toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-
-    toolbar->addWidget(new QLabel(QStringLiteral(" Profile ")));
+    auto* files = addToolBar(QStringLiteral("文件"));
+    files->setMovable(false);
+    files->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     profileCombo_ = new QComboBox(this);
-    profileCombo_->setMinimumWidth(280);
-    toolbar->addWidget(profileCombo_);
+    profileCombo_->setMinimumWidth(160);
+    profileCombo_->setMaximumWidth(260);
+    profileCombo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    files->addWidget(profileCombo_);
     connect(profileCombo_, qOverload<int>(&QComboBox::activated), this, [this](int) { loadSelectedProfile(); });
+    files->addAction(style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("刷新 Profile"), this, &MainWindow::reloadProfiles);
+    auto* open = files->addAction(style()->standardIcon(QStyle::SP_DialogOpenButton), QStringLiteral("打开"), this, &MainWindow::openBookmarksFile);
+    open->setShortcut(QKeySequence::Open);
+    auto* save = files->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), QStringLiteral("保存"), this, &MainWindow::saveBookmarks);
+    save->setShortcut(QKeySequence::Save);
+    files->addAction(QStringLiteral("另存为"), this, &MainWindow::saveBookmarksAs);
+    files->addSeparator();
+    files->addAction(QStringLiteral("导入"), this, &MainWindow::importBookmarks);
+    files->addAction(QStringLiteral("导出"), this, &MainWindow::exportBookmarks);
+    files->addAction(QStringLiteral("检查更新"), this, &MainWindow::checkForUpdates);
 
-    toolbar->addAction(style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("刷新"), this, &MainWindow::reloadProfiles);
-    toolbar->addAction(style()->standardIcon(QStyle::SP_DialogOpenButton), QStringLiteral("打开文件"), this, &MainWindow::openBookmarksFile);
-    toolbar->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), QStringLiteral("保存"), this, &MainWindow::saveBookmarks);
-    toolbar->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), QStringLiteral("另存为"), this, &MainWindow::saveBookmarksAs);
-    toolbar->addSeparator();
-    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("导出"), this, &MainWindow::exportBookmarks);
-    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("导入"), this, &MainWindow::importBookmarks);
+    addToolBarBreak();
+    auto* organize = addToolBar(QStringLiteral("整理"));
+    organize->setMovable(false);
+    organize->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    organize->addAction(style()->standardIcon(QStyle::SP_FileDialogNewFolder), QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
+    organize->addAction(style()->standardIcon(QStyle::SP_FileIcon), QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
+    auto* rename = organize->addAction(QStringLiteral("重命名"), this, &MainWindow::renameSelected);
+    rename->setShortcut(Qt::Key_F2);
+    organize->addAction(QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
+    organize->addAction(QStringLiteral("批量编辑"), this, &MainWindow::batchEditUrls);
+    organize->addAction(QStringLiteral("标签"), this, &MainWindow::editTags);
+    organize->addAction(QStringLiteral("移动到"), this, &MainWindow::moveSelected);
+    auto* remove = organize->addAction(style()->standardIcon(QStyle::SP_TrashIcon), QStringLiteral("删除"), this, &MainWindow::deleteSelected);
+    remove->setShortcut(QKeySequence::Delete);
+    organize->addAction(QStringLiteral("查重"), this, &MainWindow::scanDuplicates);
 
-    toolbar->addSeparator();
-    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogNewFolder), QStringLiteral("新建文件夹"), this, &MainWindow::newFolder);
-    toolbar->addAction(style()->standardIcon(QStyle::SP_FileIcon), QStringLiteral("新建书签"), this, &MainWindow::newBookmark);
-    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("重命名"), this, &MainWindow::renameSelected);
-    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("编辑网址"), this, &MainWindow::editSelectedUrl);
-    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("批量编辑"), this, &MainWindow::batchEditUrls);
-    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("编辑标签"), this, &MainWindow::editTags);
-    toolbar->addAction(style()->standardIcon(QStyle::SP_TrashIcon), QStringLiteral("删除"), this, &MainWindow::deleteSelected);
-    toolbar->addAction(style()->standardIcon(QStyle::SP_ArrowRight), QStringLiteral("移动到"), this, &MainWindow::moveSelected);
-    toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("查重"), this, &MainWindow::scanDuplicates);
-    toolbar->addSeparator();
-    toolbar->addAction(style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("检查更新"), this, &MainWindow::checkForUpdates);
-
-    toolbar->addSeparator();
-
+    auto* healthBar = new QToolBar(QStringLiteral("网址测活"), this);
+    addToolBar(Qt::BottomToolBarArea, healthBar);
+    healthBar->setMovable(false);
     includeSubfolders_ = new QCheckBox(QStringLiteral("含子文件夹"), this);
     includeSubfolders_->setChecked(true);
-    toolbar->addWidget(includeSubfolders_);
-
-    toolbar->addWidget(new QLabel(QStringLiteral(" 并发数 ")));
+    healthBar->addWidget(includeSubfolders_);
+    healthBar->addWidget(new QLabel(QStringLiteral("  并发 ")));
     concurrencySpin_ = new QSpinBox(this);
     concurrencySpin_->setRange(1, 128);
     concurrencySpin_->setValue(health_.maxConcurrent());
-    concurrencySpin_->setToolTip(QStringLiteral("同时测活的网址数量；数值越大速度越快，但也更容易触发站点限速"));
-    concurrencySpin_->setMaximumWidth(72);
-    toolbar->addWidget(concurrencySpin_);
-
-    toolbar->addWidget(new QLabel(QStringLiteral(" 超时(秒) ")));
+    healthBar->addWidget(concurrencySpin_);
+    healthBar->addWidget(new QLabel(QStringLiteral("  超时(秒) ")));
     timeoutSpin_ = new QSpinBox(this);
     timeoutSpin_->setRange(5, 60);
     timeoutSpin_->setValue(health_.requestTimeoutMs() / 1000);
-    timeoutSpin_->setToolTip(QStringLiteral("单次请求超时；瞬时网络故障最多会再重试一次"));
-    timeoutSpin_->setMaximumWidth(64);
-    toolbar->addWidget(timeoutSpin_);
-
-    checkButton_ = new QPushButton(style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("网址测活"), this);
-    toolbar->addWidget(checkButton_);
+    healthBar->addWidget(timeoutSpin_);
+    checkButton_ = new QPushButton(QStringLiteral("网址测活"), this);
+    healthBar->addWidget(checkButton_);
     connect(checkButton_, &QPushButton::clicked, this, &MainWindow::checkUrls);
-    toolbar->addAction(QStringLiteral("删除异常"), this, &MainWindow::deleteFailedUrls);
-    toolbar->addAction(QStringLiteral("移动异常"), this, &MainWindow::moveFailedUrls);
-
-    toolbar->addSeparator();
-    toolbar->addWidget(new QLabel(QStringLiteral(" 搜索 ")));
-    searchEdit_ = new QLineEdit(this);
-    searchEdit_->setPlaceholderText(QStringLiteral("搜索书签名称或网址..."));
-    searchEdit_->setMaximumWidth(280);
-    toolbar->addWidget(searchEdit_);
-    connect(searchEdit_, &QLineEdit::textChanged, this, &MainWindow::refreshList);
+    healthBar->addAction(QStringLiteral("删除异常"), this, &MainWindow::deleteFailedUrls);
+    healthBar->addAction(QStringLiteral("移动异常"), this, &MainWindow::moveFailedUrls);
 
     auto* splitter = new QSplitter(this);
-    folderTree_ = new QTreeWidget(splitter);
-    folderTree_->setHeaderHidden(true);
-    folderTree_->setMinimumWidth(280);
+    folderTree_ = new BookmarkFolderTree(splitter);
+    folderTree_->setObjectName(QStringLiteral("folderTree"));
+    folderTree_->setHeaderLabel(QStringLiteral("文件夹"));
+    folderTree_->setMinimumWidth(160);
     folderTree_->setContextMenuPolicy(Qt::CustomContextMenu);
     folderTree_->setAlternatingRowColors(true);
-    // Drag/drop is disabled until drops are synchronized back to BookmarkDocument.
-    folderTree_->setDragEnabled(false);
-    folderTree_->setAcceptDrops(false);
-    folderTree_->setDropIndicatorShown(false);
-    folderTree_->setDragDropMode(QAbstractItemView::NoDragDrop);
     connect(folderTree_, &QTreeWidget::itemSelectionChanged, this, &MainWindow::refreshList);
     connect(folderTree_, &QTreeWidget::customContextMenuRequested, this, &MainWindow::showTreeContextMenu);
 
-    itemTable_ = new QTableWidget(splitter);
+    auto* browser = new QWidget(splitter);
+    auto* layout = new QVBoxLayout(browser);
+    layout->setContentsMargins(12, 8, 12, 8);
+    auto* navigation = new QHBoxLayout;
+    upButton_ = new BookmarkPathButton(browser);
+    upButton_->setObjectName(QStringLiteral("upButton"));
+    upButton_->setIcon(style()->standardIcon(QStyle::SP_ArrowUp));
+    upButton_->setToolTip(QStringLiteral("返回上一级 · 可拖入书签"));
+    upButton_->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Up));
+    upButton_->setEnabled(false);
+    navigation->addWidget(upButton_);
+    connect(upButton_, &QToolButton::clicked, this, [this]() { navigateTo(upButton_->folderId); });
+    auto* breadcrumbs = new QWidget(browser);
+    breadcrumbLayout_ = new QHBoxLayout(breadcrumbs);
+    breadcrumbLayout_->setContentsMargins(0, 0, 0, 0);
+    breadcrumbLayout_->setSpacing(2);
+    auto* pathScroll = new QScrollArea(browser);
+    pathScroll->setWidgetResizable(true);
+    pathScroll->setWidget(breadcrumbs);
+    pathScroll->setFrameShape(QFrame::NoFrame);
+    pathScroll->setFixedHeight(40);
+    pathScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    pathScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    navigation->addWidget(pathScroll, 1);
+    auto* viewToolbar = new QToolBar(browser);
+    auto* viewGroup = new QActionGroup(this);
+    for (int index = 0; index < 2; ++index) {
+        auto* action = viewToolbar->addAction(index == 0 ? QStringLiteral("图标") : QStringLiteral("详情"));
+        action->setObjectName(index == 0 ? QStringLiteral("iconMode") : QStringLiteral("detailMode"));
+        action->setCheckable(true);
+        action->setChecked(index == 0);
+        viewGroup->addAction(action);
+        connect(action, &QAction::triggered, this, [this, index]() { switchView(index); });
+    }
+    navigation->addWidget(viewToolbar);
+    layout->addLayout(navigation);
+    searchEdit_ = new QLineEdit(browser);
+    searchEdit_->setObjectName(QStringLiteral("bookmarkSearch"));
+    searchEdit_->setPlaceholderText(QStringLiteral("搜索当前文件夹的名称或网址…"));
+    searchEdit_->setClearButtonEnabled(true);
+    layout->addWidget(searchEdit_);
+    connect(searchEdit_, &QLineEdit::textChanged, this, &MainWindow::refreshList);
+
+    views_ = new QStackedWidget(browser);
+    iconView_ = new BookmarkIconView(views_);
+    iconView_->setObjectName(QStringLiteral("bookmarkIcons"));
+    views_->addWidget(iconView_);
+    itemTable_ = new QTableWidget(views_);
+    itemTable_->setObjectName(QStringLiteral("bookmarkDetails"));
+    views_->addWidget(itemTable_);
+    layout->addWidget(views_, 1);
     itemTable_->setColumnCount(9);
     itemTable_->setHorizontalHeaderLabels({QStringLiteral(""), QStringLiteral("名称"), QStringLiteral("类型"), QStringLiteral("网址"), QStringLiteral("标签"), QStringLiteral("测活"), QStringLiteral("状态码"), QStringLiteral("耗时"), QStringLiteral("添加时间")});
-    itemTable_->horizontalHeader()->setStretchLastSection(false);
     itemTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
-    itemTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    itemTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
     itemTable_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     itemTable_->setColumnWidth(0, 32);
+    itemTable_->setColumnWidth(1, 180);
     itemTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     itemTable_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     itemTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     itemTable_->setContextMenuPolicy(Qt::CustomContextMenu);
     itemTable_->setAlternatingRowColors(true);
-    // Drag/drop is disabled until drops are synchronized back to BookmarkDocument.
-    itemTable_->setDragEnabled(false);
-    itemTable_->setAcceptDrops(false);
-    itemTable_->setDropIndicatorShown(false);
+    // Detail mode is for inspection; icon mode owns positional drag/drop.
     itemTable_->setDragDropMode(QAbstractItemView::NoDragDrop);
-    connect(itemTable_, &QTableWidget::cellDoubleClicked, this, &MainWindow::openSelectedUrl);
+    connect(itemTable_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        if (auto* node = nodeFromTableItem(itemTable_->item(row, 1))) {
+            if (node->isFolder()) navigateTo(node->id());
+            else QDesktopServices::openUrl(QUrl(node->url()));
+        }
+    });
+    connect(iconView_, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
+        if (auto* node = document_.nodeById(item->data(NodeRole).toString())) {
+            if (node->isFolder()) navigateTo(node->id());
+            else QDesktopServices::openUrl(QUrl(node->url()));
+        }
+    });
+    connect(iconView_, &QListWidget::customContextMenuRequested, this, &MainWindow::showTableContextMenu);
     connect(itemTable_, &QTableWidget::customContextMenuRequested, this, &MainWindow::showTableContextMenu);
-
-    splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 4);
+    const auto makeMime = [this](const QStringList& ids) { return createDrag(ids); };
+    const auto drop = [this](const QMimeData* mime, const QString& target, int index, bool commit) {
+        return handleDrop(mime, target, index, commit);
+    };
+    folderTree_->makeMime = makeMime;
+    folderTree_->handleDrop = drop;
+    iconView_->makeMime = makeMime;
+    iconView_->handleDrop = drop;
+    upButton_->handleDrop = drop;
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setSizes({230, 970});
     setCentralWidget(splitter);
-    statusBar()->setStyleSheet("QStatusBar { border-top: 1px solid palette(mid); padding: 4px; }");
+    refreshList();
 }
 
-void MainWindow::refreshTree(const QString& preferredPath)
+void MainWindow::refreshTree(const QString& preferredId)
 {
-    QString selectedPath = preferredPath.isEmpty() ? currentFolderPath() : preferredPath;
-    const QStringList checkedPaths = checkedFolderPaths();
-
-    folderTree_->clear();
-    for (const auto& root : document_.roots()) {
-        addFolderItem(nullptr, root.get());
+    QStringList ancestors;
+    for (auto* item = folderTree_->currentItem(); item; item = item->parent()) {
+        ancestors.append(item->data(0, NodeRole).toString());
     }
-
-    restoreCheckedFolders(checkedPaths);
-
-    QTreeWidgetItem* selectedItem = nullptr;
-    while (selectedItem == nullptr && !selectedPath.isEmpty()) {
-        selectedItem = findFolderItemByPath(selectedPath);
-        if (selectedItem == nullptr) {
-            const int slash = selectedPath.lastIndexOf('/');
-            selectedPath = slash > 0 ? selectedPath.left(slash) : QString();
+    QSet<QString> checked;
+    QSet<QString> expanded;
+    for (QTreeWidgetItemIterator it(folderTree_); *it; ++it) {
+        const QString id = (*it)->data(0, NodeRole).toString();
+        if ((*it)->checkState(0) == Qt::Checked) checked.insert(id);
+        if ((*it)->isExpanded()) expanded.insert(id);
+    }
+    {
+        QSignalBlocker blocker(folderTree_);
+        folderTree_->clear();
+        for (const auto& root : document_.roots()) addFolderItem(nullptr, root.get());
+        for (QTreeWidgetItemIterator it(folderTree_); *it; ++it) {
+            const QString id = (*it)->data(0, NodeRole).toString();
+            if (checked.contains(id) && ((*it)->flags() & Qt::ItemIsUserCheckable)) (*it)->setCheckState(0, Qt::Checked);
+            (*it)->setExpanded(expanded.contains(id));
+        }
+        auto* selected = findFolderItemById(preferredId);
+        for (const auto& id : ancestors) {
+            if (!selected) selected = findFolderItemById(id);
+        }
+        if (!selected && folderTree_->topLevelItemCount()) selected = folderTree_->topLevelItem(0);
+        if (selected) {
+            for (auto* item = selected; item; item = item->parent()) item->setExpanded(true);
+            folderTree_->setCurrentItem(selected);
         }
     }
-
-    if (selectedItem == nullptr && folderTree_->topLevelItemCount() > 0) {
-        selectedItem = folderTree_->topLevelItem(0);
+    // Removed nodes may still be keys in old health results. Do not dereference them.
+    const auto allNodes = document_.allNodes();
+    const QSet<BookmarkNode*> live(allNodes.begin(), allNodes.end());
+    for (auto it = healthResults_.begin(); it != healthResults_.end();) {
+        if (!live.contains(it.key())) it = healthResults_.erase(it);
+        else ++it;
     }
-    if (selectedItem != nullptr) {
-        for (auto* parent = selectedItem->parent(); parent != nullptr; parent = parent->parent()) {
-            parent->setExpanded(true);
-        }
-        selectedItem->setExpanded(true);
-        folderTree_->setCurrentItem(selectedItem);
-    }
+    updateNavigation();
     refreshList();
     updateDirtyState();
 }
@@ -1279,42 +1355,20 @@ BookmarkNode* MainWindow::currentFolder() const
 QVector<BookmarkNode*> MainWindow::selectedListNodes() const
 {
     QVector<BookmarkNode*> nodes;
-    QSet<int> checkedRows;
-
-    // 收集勾选的行
-    for (int row = 0; row < itemTable_->rowCount(); ++row) {
-        if (auto* checkItem = itemTable_->item(row, 0)) {
-            if (checkItem->checkState() == Qt::Checked) {
-                checkedRows.insert(row);
-            }
-        }
-    }
-
-    // 如果有勾选项，优先返回勾选的
-    if (!checkedRows.isEmpty()) {
-        for (int row : checkedRows) {
-            if (auto* item = itemTable_->item(row, 1)) {
-                if (auto* node = nodeFromTableItem(item)) {
-                    nodes.push_back(node);
-                }
-            }
+    if (views_->currentIndex() == 0) {
+        for (const auto& id : iconView_->selectedNodeIds()) {
+            if (auto* node = document_.nodeById(id)) nodes.append(node);
         }
         return nodes;
     }
-
-    // 否则返回选中的行
-    const auto ranges = itemTable_->selectedRanges();
-    QSet<int> rows;
-    for (const auto& range : ranges) {
-        for (int row = range.topRow(); row <= range.bottomRow(); ++row) {
-            rows.insert(row);
-        }
+    bool hasChecked = false;
+    for (int row = 0; row < itemTable_->rowCount(); ++row) {
+        if (itemTable_->item(row, 0)->checkState() == Qt::Checked) hasChecked = true;
     }
-    for (int row : rows) {
-        if (auto* item = itemTable_->item(row, 1)) {
-            if (auto* node = nodeFromTableItem(item)) {
-                nodes.push_back(node);
-            }
+    for (int row = 0; row < itemTable_->rowCount(); ++row) {
+        if (hasChecked ? itemTable_->item(row, 0)->checkState() == Qt::Checked
+                       : itemTable_->selectionModel()->isRowSelected(row)) {
+            if (auto* node = nodeFromTableItem(itemTable_->item(row, 1))) nodes.append(node);
         }
     }
     return nodes;
@@ -1331,20 +1385,12 @@ QVector<BookmarkNode*> MainWindow::checkedFolderNodes() const
 
 QVector<BookmarkNode*> MainWindow::selectedOperationNodes() const
 {
-    QVector<BookmarkNode*> nodes;
-    QSet<BookmarkNode*> seen;
-    const auto appendUnique = [&nodes, &seen](const QVector<BookmarkNode*>& source) {
-        for (auto* node : source) {
-            if (node != nullptr && !seen.contains(node)) {
-                seen.insert(node);
-                nodes.push_back(node);
-            }
-        }
-    };
-
-    appendUnique(selectedListNodes());
-    appendUnique(checkedFolderNodes());
-    return filterNestedNodes(nodes);
+    if (treeOperation_ || folderTree_->hasFocus()) {
+        auto nodes = checkedFolderNodes();
+        if (nodes.isEmpty() && currentFolder()) nodes.append(currentFolder());
+        return filterNestedNodes(nodes);
+    }
+    return filterNestedNodes(selectedListNodes());
 }
 
 QVector<BookmarkNode*> MainWindow::collectUrlNodes(BookmarkNode* folder, bool recursive) const
@@ -1377,7 +1423,7 @@ BookmarkNode* MainWindow::chooseFolder()
     const auto folders = collectFolders();
     QStringList labels;
     for (auto* folder : folders) {
-        labels << folder->path();
+        labels << QStringLiteral("%1  [#%2]").arg(folder->path(), folder->id());
     }
     bool ok = false;
     const QString selected = QInputDialog::getItem(this, QStringLiteral("选择目标文件夹"), QStringLiteral("移动到："), labels, 0, false, &ok);
@@ -1427,48 +1473,10 @@ void MainWindow::updateDirtyState()
     setWindowTitle(QStringLiteral("Chrome Bookmark Explorer%1").arg(suffix));
 }
 
-QString MainWindow::currentFolderPath() const
+QString MainWindow::currentFolderId() const
 {
-    auto* folder = currentFolder();
-    return folder == nullptr ? QString() : folder->path();
-}
-
-QString MainWindow::nearestExistingFolderPath(QString path) const
-{
-    while (!path.isEmpty()) {
-        for (auto* folder : document_.folders()) {
-            if (folder != nullptr && folder->path() == path) {
-                return path;
-            }
-        }
-        const int slash = path.lastIndexOf('/');
-        path = slash > 0 ? path.left(slash) : QString();
-    }
-    return {};
-}
-
-QStringList MainWindow::checkedFolderPaths() const
-{
-    QStringList paths;
-    for (int i = 0; i < folderTree_->topLevelItemCount(); ++i) {
-        collectCheckedFolderPaths(folderTree_->topLevelItem(i), &paths);
-    }
-    return paths;
-}
-
-void MainWindow::restoreCheckedFolders(const QStringList& paths)
-{
-    QSet<QString> pathSet;
-    for (const auto& path : paths) {
-        pathSet.insert(path);
-    }
-    for (const auto& path : pathSet) {
-        if (auto* item = findFolderItemByPath(path)) {
-            if (item->flags() & Qt::ItemIsUserCheckable) {
-                item->setCheckState(0, Qt::Checked);
-            }
-        }
-    }
+    auto* item = folderTree_->currentItem();
+    return item ? item->data(0, NodeRole).toString() : QString();
 }
 
 void MainWindow::collectCheckedFolderNodes(QTreeWidgetItem* item, QVector<BookmarkNode*>* nodes) const
@@ -1486,20 +1494,7 @@ void MainWindow::collectCheckedFolderNodes(QTreeWidgetItem* item, QVector<Bookma
     }
 }
 
-void MainWindow::collectCheckedFolderPaths(QTreeWidgetItem* item, QStringList* paths) const
-{
-    if (item == nullptr || paths == nullptr) {
-        return;
-    }
-    if ((item->flags() & Qt::ItemIsUserCheckable) && item->checkState(0) == Qt::Checked) {
-        if (auto* node = nodeFromItem(item)) {
-            paths->append(node->path());
-        }
-    }
-    for (int i = 0; i < item->childCount(); ++i) {
-        collectCheckedFolderPaths(item->child(i), paths);
-    }
-}
+
 
 QVector<BookmarkNode*> MainWindow::filterNestedNodes(const QVector<BookmarkNode*>& nodes) const
 {
@@ -1520,32 +1515,11 @@ QVector<BookmarkNode*> MainWindow::filterNestedNodes(const QVector<BookmarkNode*
     return result;
 }
 
-QTreeWidgetItem* MainWindow::findFolderItemByPath(const QString& path) const
+QTreeWidgetItem* MainWindow::findFolderItemById(const QString& id) const
 {
-    if (path.isEmpty()) {
-        return nullptr;
-    }
-    for (int i = 0; i < folderTree_->topLevelItemCount(); ++i) {
-        if (auto* item = findFolderItemRecursive(folderTree_->topLevelItem(i), path)) {
-            return item;
-        }
-    }
-    return nullptr;
-}
-
-QTreeWidgetItem* MainWindow::findFolderItemRecursive(QTreeWidgetItem* item, const QString& path) const
-{
-    if (item == nullptr) {
-        return nullptr;
-    }
-    auto* node = nodeFromItem(item);
-    if (node != nullptr && node->path() == path) {
-        return item;
-    }
-    for (int i = 0; i < item->childCount(); ++i) {
-        if (auto* match = findFolderItemRecursive(item->child(i), path)) {
-            return match;
-        }
+    if (id.isEmpty()) return nullptr;
+    for (QTreeWidgetItemIterator it(folderTree_); *it; ++it) {
+        if ((*it)->data(0, NodeRole).toString() == id) return *it;
     }
     return nullptr;
 }
@@ -1599,28 +1573,176 @@ void MainWindow::closeProgress()
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
-BookmarkNode* MainWindow::nodeFromItem(QTreeWidgetItem* item)
+BookmarkNode* MainWindow::nodeFromItem(QTreeWidgetItem* item) const
 {
     if (item == nullptr) {
         return nullptr;
     }
-    return reinterpret_cast<BookmarkNode*>(item->data(0, NodeRole).value<quintptr>());
+    return document_.nodeById(item->data(0, NodeRole).toString());
 }
 
-BookmarkNode* MainWindow::nodeFromTableItem(QTableWidgetItem* item)
+BookmarkNode* MainWindow::nodeFromTableItem(QTableWidgetItem* item) const
 {
     if (item == nullptr) {
         return nullptr;
     }
-    return reinterpret_cast<BookmarkNode*>(item->data(NodeRole).value<quintptr>());
+    return document_.nodeById(item->data(NodeRole).toString());
 }
 
 void MainWindow::setNodeData(QTreeWidgetItem* item, BookmarkNode* node)
 {
-    item->setData(0, NodeRole, QVariant::fromValue(reinterpret_cast<quintptr>(node)));
+    item->setData(0, NodeRole, node->id());
 }
 
 void MainWindow::setNodeData(QTableWidgetItem* item, BookmarkNode* node)
 {
-    item->setData(NodeRole, QVariant::fromValue(reinterpret_cast<quintptr>(node)));
+    item->setData(NodeRole, node->id());
+}
+
+void MainWindow::navigateTo(const QString& id)
+{
+    if (auto* item = findFolderItemById(id)) {
+        searchEdit_->clear();
+        folderTree_->setCurrentItem(item);
+        folderTree_->scrollToItem(item);
+    }
+}
+
+void MainWindow::updateNavigation()
+{
+    while (auto* item = breadcrumbLayout_->takeAt(0)) {
+        if (item->widget()) item->widget()->deleteLater();
+        delete item;
+    }
+    auto* folder = currentFolder();
+    upButton_->folderId = folder && folder->parent ? folder->parent->id() : QString();
+    upButton_->setEnabled(!upButton_->folderId.isEmpty());
+    QVector<BookmarkNode*> path;
+    for (auto* node = folder; node; node = node->parent) path.prepend(node);
+    for (auto* node : path) {
+        auto* button = new BookmarkPathButton;
+        button->folderId = node->id();
+        button->setText(fontMetrics().elidedText(node->name(), Qt::ElideMiddle, 180));
+        button->setToolTip(node->path() + QStringLiteral("\n点击进入 · 拖入书签以移动"));
+        button->handleDrop = iconView_->handleDrop;
+        connect(button, &QToolButton::clicked, this, [this, id = node->id()]() { navigateTo(id); });
+        breadcrumbLayout_->addWidget(button);
+        if (node != folder) breadcrumbLayout_->addWidget(new QLabel(QStringLiteral("›")));
+    }
+    breadcrumbLayout_->addStretch();
+}
+
+QStringList MainWindow::selectedListIds() const
+{
+    QStringList ids;
+    for (auto* node : selectedListNodes()) ids.append(node->id());
+    return ids;
+}
+
+void MainWindow::restoreListSelection(const QStringList& ids)
+{
+    const QSet<QString> selected(ids.begin(), ids.end());
+    iconView_->clearSelection();
+    itemTable_->clearSelection();
+    for (int index = 0; index < iconView_->count(); ++index) {
+        auto* item = iconView_->item(index);
+        item->setSelected(selected.contains(item->data(NodeRole).toString()));
+    }
+    for (int row = 0; row < itemTable_->rowCount(); ++row) {
+        const bool select = selected.contains(itemTable_->item(row, 1)->data(NodeRole).toString());
+        itemTable_->item(row, 0)->setCheckState(Qt::Unchecked);
+        if (select) itemTable_->selectionModel()->select(itemTable_->model()->index(row, 1),
+            QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    }
+}
+
+void MainWindow::switchView(int index)
+{
+    const auto ids = selectedListIds();
+    views_->setCurrentIndex(index);
+    restoreListSelection(ids);
+    if (index == 0) iconView_->setFocus();
+    else itemTable_->setFocus();
+}
+
+QIcon MainWindow::nodeIcon(const BookmarkNode* node)
+{
+    if (node->isFolder()) {
+        const QIcon icon(QStringLiteral(":/icons/folder.png"));
+        return icon.isNull() ? style()->standardIcon(QStyle::SP_DirIcon) : icon;
+    }
+    QString host = QUrl(node->url()).host().toLower();
+    if (host.startsWith(QStringLiteral("www."))) host.remove(0, 4);
+    if (host.isEmpty()) host = QUrl(node->url()).scheme();
+    if (host.isEmpty()) host = QStringLiteral("?");
+    if (siteIcons_.contains(host)) return siteIcons_.value(host);
+    const QByteArray hash = QCryptographicHash::hash(host.toUtf8(), QCryptographicHash::Sha256);
+    const QColor color = QColor::fromHsv(static_cast<unsigned char>(hash[0]) * 359 / 255, 145, 155);
+    QPixmap pixmap(96, 96);
+    pixmap.setDevicePixelRatio(2);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(color);
+    painter.drawRoundedRect(QRectF(2, 2, 44, 44), 11, 11);
+    auto font = painter.font();
+    font.setPixelSize(25);
+    font.setBold(true);
+    painter.setFont(font);
+    painter.setPen(Qt::white);
+    painter.drawText(QRect(2, 2, 44, 44), Qt::AlignCenter, host.left(1).toUpper());
+    painter.end();
+    const QIcon icon(pixmap);
+    siteIcons_.insert(host, icon);
+    return icon;
+}
+
+QMimeData* MainWindow::createDrag(const QStringList& ids) const
+{
+    if (health_.isRunning() || ids.isEmpty()) return nullptr;
+    for (const auto& id : ids) {
+        auto* node = document_.nodeById(id);
+        if (!node || !node->parent) return nullptr;
+    }
+    return BookmarkDragDrop::encode({document_.generation(), document_.revision(), ids});
+}
+
+bool MainWindow::handleDrop(const QMimeData* mime, const QString& targetId, int index, bool commit)
+{
+    BookmarkDragDrop::Payload payload;
+    if (health_.isRunning() || !BookmarkDragDrop::decode(mime, &payload)
+        || payload.generation != document_.generation() || payload.revision != document_.revision()) return false;
+    auto* target = document_.nodeById(targetId);
+    if (!target || !target->isFolder() || index < -1 || index > static_cast<int>(target->children.size())) return false;
+    const bool filteredTarget = !searchEdit_->text().trimmed().isEmpty() && targetId == currentFolderId();
+    // A filtered folder only accepts explicit cross-folder appends, never reordering.
+    if (filteredTarget && index != -1) return false;
+    QVector<BookmarkNode*> nodes;
+    for (const auto& id : payload.ids) {
+        auto* node = document_.nodeById(id);
+        if (!node || !node->parent || (filteredTarget && node->parent == target)) return false;
+        for (auto* ancestor = target; ancestor; ancestor = ancestor->parent) {
+            if (ancestor == node) return false;
+        }
+        nodes.append(node);
+    }
+    if (!commit) return true;
+    const auto revision = document_.revision();
+    const QString currentId = currentFolderId();
+    QString error;
+    if (!document_.moveNodes(nodes, target, index, &error)) {
+        setStatus(QStringLiteral("移动失败：%1").arg(error));
+        return false;
+    }
+    if (revision == document_.revision()) return true;
+    updateDirtyState();
+    // A path button may be the receiver of the current drop event; rebuild after it returns.
+    QTimer::singleShot(0, this, [this, currentId, ids = payload.ids, generation = payload.generation]() {
+        if (generation != document_.generation()) return;
+        refreshTree(currentId);
+        restoreListSelection(ids);
+        setStatus(QStringLiteral("已移动 %1 个项目 · 尚未保存（Ctrl+S 保存）").arg(ids.size()));
+    });
+    return true;
 }

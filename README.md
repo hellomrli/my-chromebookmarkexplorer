@@ -10,7 +10,10 @@ Windows 原生版 Chrome 收藏夹管理工具，使用 **C++17 + Qt6** 编写�
 
 - 自动识别 Chrome Profile：`Default`、`Profile 1`、`Profile 2`
 - 打开任意 Chrome `Bookmarks` 文件
-- 文件夹树 + 书签列表视图，带图标显示
+- 文件夹树 + 图标网格／详细列表切换，提供路径导航和返回上级
+- 图标视图支持多选拖放、目录内排序，以及拖入文件夹树／路径按钮跨目录移动
+- 搜索期间仍可拖入明确的文件夹目标；过滤列表不支持排序，也不能把当前目录项目拖回当前路径以改变顺序
+- 拖放只修改内存中的文档，确认后按 `Ctrl+S` 保存；非法移动或过期拖放不会部分生效
 - 新建文件夹、新建书签、重命名、编辑网址、删除、移动
 - **右侧列表勾选框支持批量操作**
 - 左侧文件夹树支持勾选文件夹并批量删除、移动
@@ -64,7 +67,11 @@ dist\ChromeBookmarkExplorer\
 ChromeBookmarkExplorer-windows-x64.zip
 ```
 
-解压后里面就是 `ChromeBookmarkExplorer.exe` 和 Qt 运行依赖。
+解压后里面就是 `ChromeBookmarkExplorer.exe` 和 Qt 运行依赖。请保留整个解压目录，不要只复制 exe。
+
+试用版本以 GitHub **Pre-release** 单独发布，不覆盖正式版本，也不会通过正式版自动更新推送。建议先复制 Chrome 的 `Bookmarks` 文件，用副本测试拖放、搜索及保存，确认正常后再处理实际书签。
+
+Windows 云构建中的 `BookmarkDocumentTests` 和 `BookmarkExplorerTests` 必须通过才能打包。`HealthCheckerTests` 目前单独运行并保留结果，失败会标记为已知限制，不等同于全套测试通过；完整日志和 JUnit 报告见 `windows-test-results` artifact。
 
 ## 打包安装包
 
