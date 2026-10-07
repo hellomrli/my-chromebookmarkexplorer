@@ -5,6 +5,8 @@
 
 class BookmarkIconView : public QListWidget {
 public:
+    enum { HealthTextRole = Qt::UserRole + 20, HealthColorRole };
+
     struct DropLocation {
         QString folderId;
         int index = -1;

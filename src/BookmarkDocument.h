@@ -6,8 +6,11 @@
 #include <QJsonDocument>
 #include <QVector>
 
+#include <functional>
+
 class BookmarkDocument {
 public:
+    explicit BookmarkDocument(std::function<bool()> chromeRunningCheck = {});
     bool load(const QString& filePath, QString* error = nullptr);
     bool save(const QString& filePath = {}, bool requireChromeClosed = true, QString* error = nullptr);
 
@@ -38,6 +41,7 @@ public:
                    int insertionIndex = -1, QString* error = nullptr);
 
 private:
+    std::function<bool()> chromeRunningCheck_;
     QJsonObject topLevel_;
     QString path_;
     bool dirty_ = false;

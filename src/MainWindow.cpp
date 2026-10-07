@@ -86,6 +86,16 @@ QString healthResultTooltip(const HealthResult& result)
     return lines.join(QLatin1Char('\n'));
 }
 
+QColor healthColor(const HealthResult& result)
+{
+    if (result.definitivelyBroken()) return QColor(QStringLiteral("#dc2626"));
+    if (result.state == HealthState::Healthy || result.state == HealthState::Redirected)
+        return QColor(QStringLiteral("#15803d"));
+    if (result.state == HealthState::Unknown || result.state == HealthState::Skipped)
+        return QColor(QStringLiteral("#64748b"));
+    return QColor(QStringLiteral("#b45309"));
+}
+
 QString normalizedUrlKey(const QString& input)
 {
     const QString trimmed = input.trimmed();
@@ -360,14 +370,18 @@ bool MainWindow::saveBookmarksInternal(bool forceChoosePath)
     if (!document_.save(target, true, &error)) {
         closeProgress();
         LOG_ERROR(QStringLiteral("Failed to save bookmarks to: %1, error: %2").arg(target, error));
-        QMessageBox::critical(this, QStringLiteral("保存失败"), error);
+        QMessageBox message(QMessageBox::Warning, QStringLiteral("保存失败"), error,
+            QMessageBox::Cancel, this);
+        auto* saveAs = message.addButton(QStringLiteral("另存为副本…"), QMessageBox::ActionRole);
+        message.exec();
+        if (message.clickedButton() == saveAs) return saveBookmarksInternal(true);
         return false;
     }
     updateProgress(QStringLiteral("保存完成"), 3);
     closeProgress();
     updateDirtyState();
     LOG_INFO(QStringLiteral("Saved bookmarks to: %1").arg(target));
-    setStatus(QStringLiteral("已保存并自动备份：%1").arg(target));
+    setStatus(QStringLiteral("已保存：%1（覆盖已有文件时已自动备份）").arg(target));
     return true;
 }
 
@@ -419,7 +433,7 @@ void MainWindow::refreshList()
             && !node->url().contains(query, Qt::CaseInsensitive)) continue;
         visibleNodes.append(node);
         auto* item = new QListWidgetItem(nodeIcon(node), node->name(), iconView_);
-        item->setSizeHint(QSize(120, 104));
+        item->setSizeHint(QSize(120, 128));
         item->setData(NodeRole, node->id());
         item->setData(BookmarkDragDrop::FolderRole, node->isFolder());
         item->setData(BookmarkDragDrop::SourceIndexRole, index);
@@ -452,6 +466,7 @@ void MainWindow::refreshList()
         itemTable_->setItem(row, 8, new QTableWidgetItem(node->formattedDateAdded()));
     }
     restoreListSelection(selected);
+    updateHealthDisplay();
     iconView_->verticalScrollBar()->setValue(iconScroll);
     itemTable_->verticalScrollBar()->setValue(tableScroll);
     setStatus(query.isEmpty()
@@ -756,8 +771,9 @@ void MainWindow::checkUrls()
     }
     for (auto* node : nodes) {
         healthResults_.remove(node);
+        checkingNodeIds_.insert(node->id());
     }
-    refreshList();
+    updateHealthDisplay();
     healthTotal_ = nodes.size();
     healthCompleted_ = 0;
     const int maxConcurrent = concurrencySpin_ == nullptr ? health_.maxConcurrent() : concurrencySpin_->value();
@@ -1005,6 +1021,7 @@ void MainWindow::onUpdateAvailable(const QString& version, const QString& url, c
 void MainWindow::onHealthResult(BookmarkNode* node, const HealthResult& result)
 {
     healthResults_.insert(node, result);
+    if (node) checkingNodeIds_.remove(node->id());
     ++healthCompleted_;
     const QString currentName = node == nullptr ? result.url : node->name();
     updateProgress(
@@ -1013,11 +1030,13 @@ void MainWindow::onHealthResult(BookmarkNode* node, const HealthResult& result)
             .arg(healthTotal_)
             .arg(currentName),
         healthCompleted_);
-    refreshList();
+    updateHealthDisplay();
 }
 
 void MainWindow::onHealthFinished(int total, int failed)
 {
+    checkingNodeIds_.clear();
+    updateHealthDisplay();
     checkButton_->setEnabled(true);
     if (concurrencySpin_ != nullptr) {
         concurrencySpin_->setEnabled(true);
@@ -1140,8 +1159,11 @@ void MainWindow::buildUi()
     auto* open = files->addAction(style()->standardIcon(QStyle::SP_DialogOpenButton), QStringLiteral("打开"), this, &MainWindow::openBookmarksFile);
     open->setShortcut(QKeySequence::Open);
     auto* save = files->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), QStringLiteral("保存"), this, &MainWindow::saveBookmarks);
+    save->setObjectName(QStringLiteral("saveBookmarks"));
     save->setShortcut(QKeySequence::Save);
-    files->addAction(QStringLiteral("另存为"), this, &MainWindow::saveBookmarksAs);
+    auto* saveAs = files->addAction(QStringLiteral("另存为"), this, &MainWindow::saveBookmarksAs);
+    saveAs->setObjectName(QStringLiteral("saveBookmarksAs"));
+    saveAs->setShortcut(QKeySequence::SaveAs);
     files->addSeparator();
     files->addAction(QStringLiteral("导入"), this, &MainWindow::importBookmarks);
     files->addAction(QStringLiteral("导出"), this, &MainWindow::exportBookmarks);
@@ -1326,7 +1348,7 @@ void MainWindow::refreshTree(const QString& preferredId)
     const auto allNodes = document_.allNodes();
     const QSet<BookmarkNode*> live(allNodes.begin(), allNodes.end());
     for (auto it = healthResults_.begin(); it != healthResults_.end();) {
-        if (!live.contains(it.key())) it = healthResults_.erase(it);
+        if (!live.contains(it.key()) || it.value().url != it.key()->url()) it = healthResults_.erase(it);
         else ++it;
     }
     updateNavigation();
@@ -1715,6 +1737,40 @@ void MainWindow::updateSiteIcon(const QString& site, const QIcon& icon)
         auto* item = itemTable_->item(row, 1);
         const auto* node = nodeFromTableItem(item);
         if (node && !node->isFolder() && FaviconLoader::siteKey(node->url()) == site) item->setIcon(icon);
+    }
+}
+
+void MainWindow::updateHealthDisplay()
+{
+    for (int index = 0; index < iconView_->count(); ++index) {
+        auto* item = iconView_->item(index);
+        auto* node = document_.nodeById(item->data(NodeRole).toString());
+        if (!node || node->isFolder()) continue;
+        const auto result = healthResults_.value(node);
+        const bool checking = checkingNodeIds_.contains(node->id());
+        QString text = checking ? QStringLiteral("检测中…")
+            : (result.status.isEmpty() ? QStringLiteral("未检测") : result.status);
+        if (!checking && result.code > 0) text += QStringLiteral(" · %1").arg(result.code);
+        item->setData(BookmarkIconView::HealthTextRole, text);
+        item->setData(BookmarkIconView::HealthColorRole,
+            checking ? QColor(QStringLiteral("#2563eb")) : healthColor(result));
+        item->setToolTip(node->name() + QLatin1Char('\n') + node->url() + QLatin1Char('\n')
+            + (checking || result.status.isEmpty() ? text : healthResultTooltip(result)));
+        item->setData(Qt::AccessibleDescriptionRole, item->toolTip());
+    }
+    for (int row = 0; row < itemTable_->rowCount(); ++row) {
+        auto* node = nodeFromTableItem(itemTable_->item(row, 1));
+        if (!node || node->isFolder()) continue;
+        const auto result = healthResults_.value(node);
+        const bool checking = checkingNodeIds_.contains(node->id());
+        const QStringList values = {
+            checking ? QStringLiteral("检测中…") : result.status, codeText(result.code),
+            result.elapsedMs > 0 ? QStringLiteral("%1 ms").arg(result.elapsedMs) : QString()};
+        for (int column = 0; column < values.size(); ++column) {
+            auto* item = itemTable_->item(row, column + 5);
+            item->setText(values[column]);
+            item->setToolTip(healthResultTooltip(result));
+        }
     }
 }
 

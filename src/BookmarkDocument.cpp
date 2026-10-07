@@ -78,6 +78,23 @@ bool fingerprint(const QString& path, QByteArray* result, QString* error)
     return true;
 }
 
+bool isChromeBookmarksFile(const QString& path)
+{
+    const QFileInfo info(path);
+    if (samePath(info.fileName(), QStringLiteral("Bookmarks"))) {
+        const QDir profile(info.absolutePath());
+        const QString userData = QFileInfo(profile.absolutePath()).absolutePath();
+        const QString defaultUserData = defaultChromeUserDataDir();
+        if ((!defaultUserData.isEmpty() && samePath(canonicalPath(userData), canonicalPath(defaultUserData)))
+            || (QFileInfo::exists(profile.filePath(QStringLiteral("Preferences")))
+                && QFileInfo::exists(QDir(userData).filePath(QStringLiteral("Local State"))))) return true;
+    }
+    for (const auto& profile : discoverChromeProfiles()) {
+        if (sameFile(path, profile.bookmarksPath)) return true;
+    }
+    return false;
+}
+
 bool validNode(const QJsonObject& object, bool root = false)
 {
     const QString type = root && !object.contains("type")
@@ -107,6 +124,11 @@ void updateRootKey(BookmarkNode* node, const QString& rootKey)
     node->rootKey = rootKey;
     for (const auto& child : node->children) updateRootKey(child.get(), rootKey);
 }
+}
+
+BookmarkDocument::BookmarkDocument(std::function<bool()> chromeRunningCheck)
+    : chromeRunningCheck_(chromeRunningCheck ? std::move(chromeRunningCheck) : isChromeRunning)
+{
 }
 
 bool BookmarkDocument::load(const QString& filePath, QString* error)
@@ -144,7 +166,7 @@ bool BookmarkDocument::load(const QString& filePath, QString* error)
     }
 
     // Build the replacement in isolation: even a failed load must retain all old pointers.
-    BookmarkDocument replacement;
+    BookmarkDocument replacement(chromeRunningCheck_);
     replacement.topLevel_ = object;
     replacement.loadRoots();
     replacement.path_ = filePath;
@@ -165,11 +187,6 @@ bool BookmarkDocument::save(const QString& filePath, bool requireChromeClosed, Q
         if (error) *error = QStringLiteral("没有保存路径");
         return false;
     }
-    if (requireChromeClosed && isChromeRunning()) {
-        if (error) *error = QStringLiteral("检测到 Chrome 正在运行。请先关闭 Chrome，再保存收藏夹。");
-        return false;
-    }
-
     const QString targetAbsolute = filePath.isEmpty() && !sourceAbsolutePath_.isEmpty()
         ? sourceAbsolutePath_ : absolutePath(requestedPath);
     const QString targetPath = canonicalPath(targetAbsolute);
@@ -178,6 +195,13 @@ bool BookmarkDocument::save(const QString& filePath, bool requireChromeClosed, Q
             || samePath(targetPath, sourceCanonicalPath_)
             || sameFile(targetAbsolute, sourceAbsolutePath_)
             || sameFile(targetPath, sourceCanonicalPath_));
+    if (requireChromeClosed
+        && (isChromeBookmarksFile(targetPath) || (sameSource && isChromeBookmarksFile(sourceCanonicalPath_)))
+        && chromeRunningCheck_()) {
+        if (error) *error = QStringLiteral("检测到 Chrome 正在运行，不能覆盖 Chrome Profile 中的 Bookmarks。\n"
+            "请关闭 Chrome（包括后台进程）后重试，或另存为到其他目录以保留当前修改。");
+        return false;
+    }
     const auto conflict = [error]() {
         if (error) *error = QStringLiteral("磁盘上的收藏夹已更改或无法验证，已拒绝覆盖。请重新加载或另存为其他文件。");
         return false;

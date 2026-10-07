@@ -6,16 +6,48 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QPainter>
+#include <QStyledItemDelegate>
+
+namespace {
+class BookmarkIconDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        auto content = option;
+        content.rect.adjust(0, 0, 0, -24);
+        QStyledItemDelegate::paint(painter, content, index);
+        const QString text = index.data(BookmarkIconView::HealthTextRole).toString();
+        if (text.isEmpty()) return;
+        const QColor color = index.data(BookmarkIconView::HealthColorRole).value<QColor>();
+        const QRect badge = option.rect.adjusted(5, option.rect.height() - 22, -5, -2);
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        QColor background = color;
+        background.setAlpha(30);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(background);
+        painter->drawRoundedRect(badge, 5, 5);
+        painter->setFont(option.font);
+        painter->setPen(color);
+        const QString label = option.fontMetrics.elidedText(text, Qt::ElideRight, badge.width() - 8);
+        painter->drawText(badge.adjusted(4, 0, -4, 0), Qt::AlignCenter, label);
+        painter->restore();
+    }
+};
+}
 
 BookmarkIconView::BookmarkIconView(QWidget* parent) : QListWidget(parent)
 {
+    setItemDelegate(new BookmarkIconDelegate(this));
     setViewMode(QListView::IconMode);
     // Static mode disables viewport drops during layout; our drop handler owns reordering.
     setMovement(QListView::Snap);
     setResizeMode(QListView::Adjust);
     setLayoutMode(QListView::SinglePass);
     setIconSize(QSize(48, 48));
-    setGridSize(QSize(128, 112));
+    setGridSize(QSize(128, 136));
     setSpacing(8);
     setWordWrap(true);
     setUniformItemSizes(true);

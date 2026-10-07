@@ -75,6 +75,7 @@ private:
     HealthChecker health_;
     Updater updater_;
     QHash<BookmarkNode*, HealthResult> healthResults_;
+    QSet<QString> checkingNodeIds_;
     QHash<QString, QIcon> siteIcons_;
     FaviconLoader* faviconLoader_ = nullptr;
     bool startupLoading_ = true;
@@ -109,6 +110,7 @@ private:
     QString currentFolderId() const;
     QIcon nodeIcon(const BookmarkNode* node);
     void updateSiteIcon(const QString& site, const QIcon& icon);
+    void updateHealthDisplay();
     QMimeData* createDrag(const QStringList& ids) const;
     bool handleDrop(const QMimeData* mime, const QString& targetId, int index, bool commit);
     BookmarkNode* currentFolder() const;

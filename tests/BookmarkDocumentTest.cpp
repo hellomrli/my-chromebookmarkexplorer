@@ -577,6 +577,114 @@ private slots:
         QVERIFY(!document.save({}, false));
     }
 
+    void savesStandaloneCopiesWhileChromeRuns()
+    {
+        QTemporaryDir directory;
+        const QString path = directory.filePath("Bookmarks");
+        QVERIFY(writeSample(path));
+        BookmarkDocument document([] { return true; });
+        QVERIFY(document.load(path));
+        QVERIFY(document.rename(document.nodeById("10"), "saved with Chrome open"));
+        QString error;
+        QVERIFY2(document.save({}, true, &error), qPrintable(error));
+        QVERIFY(!document.isDirty());
+        BookmarkDocument reopened;
+        QVERIFY(reopened.load(path));
+        QCOMPARE(reopened.nodeById("10")->name(), QStringLiteral("saved with Chrome open"));
+        QCOMPARE(backups(path).size(), 1);
+        QVERIFY(document.rename(document.nodeById("10"), "second save"));
+        QVERIFY2(document.save({}, true, &error), qPrintable(error));
+        QCOMPARE(backups(path).size(), 2);
+    }
+
+    void runningChromeProtectsProfileButAllowsSaveAs()
+    {
+        QTemporaryDir directory;
+        const QString profile = directory.filePath("User Data/Default");
+        QVERIFY(QDir().mkpath(profile));
+        QVERIFY(writeBytes(directory.filePath("User Data/Local State"), "{}"));
+        QVERIFY(writeBytes(QDir(profile).filePath("Preferences"), "{}"));
+        const QString source = QDir(profile).filePath("Bookmarks");
+        const QString copy = directory.filePath("Saved Bookmarks.json");
+        QVERIFY(writeSample(source));
+        const auto original = readBytes(source);
+        bool running = true;
+        BookmarkDocument document([&running] { return running; });
+        QVERIFY(document.load(source));
+        QVERIFY(document.rename(document.nodeById("10"), "unsaved"));
+        QString error;
+        QVERIFY(!document.save({}, true, &error));
+        QVERIFY(error.contains(QStringLiteral("另存为")));
+        QVERIFY(document.isDirty());
+        QCOMPARE(readBytes(source), original);
+        QVERIFY(backups(source).isEmpty());
+        QVERIFY2(document.save(copy, true, &error), qPrintable(error));
+        QCOMPARE(document.path(), copy);
+        QVERIFY(!document.isDirty());
+        QCOMPARE(readBytes(source), original);
+        QVERIFY(document.rename(document.nodeById("10"), "changed copy"));
+        QVERIFY(!document.save(source, true, &error));
+        QCOMPARE(document.path(), copy);
+        QVERIFY(document.isDirty());
+        running = false;
+        QVERIFY2(document.save(source, true, &error), qPrintable(error));
+        QCOMPARE(backups(source).size(), 1);
+        BookmarkDocument reopened;
+        QVERIFY(reopened.load(source));
+        QCOMPARE(reopened.nodeById("10")->name(), QStringLiteral("changed copy"));
+    }
+
+    void runningChromeProtectsProfileAliases_data()
+    {
+        QTest::addColumn<bool>("hardLink");
+        QTest::newRow("symlink") << false;
+        QTest::newRow("hardlink") << true;
+    }
+
+    void runningChromeProtectsProfileAliases()
+    {
+        QFETCH(bool, hardLink);
+        QTemporaryDir directory;
+        const QString profile = directory.filePath("User Data/Default");
+        QVERIFY(QDir().mkpath(profile));
+        QVERIFY(writeBytes(directory.filePath("User Data/Local State"), "{}"));
+        QVERIFY(writeBytes(QDir(profile).filePath("Preferences"), "{}"));
+        const QString source = QDir(profile).filePath("Bookmarks");
+        const QString alias = directory.filePath("alias.json");
+        QVERIFY(writeSample(source));
+        std::error_code linkError;
+        if (hardLink) std::filesystem::create_hard_link(nativePath(source), nativePath(alias), linkError);
+        else std::filesystem::create_symlink(nativePath(source), nativePath(alias), linkError);
+        if (linkError) QSKIP("Filesystem aliases are not available on this platform");
+        BookmarkDocument document([] { return true; });
+        QVERIFY(document.load(source));
+        QVERIFY(document.rename(document.nodeById("10"), "unsaved"));
+        QString error;
+        QVERIFY(!document.save(alias, true, &error));
+        QVERIFY(error.contains(QStringLiteral("Chrome")));
+        QCOMPARE(readBytes(source), QJsonDocument(sample()).toJson());
+        QVERIFY(document.isDirty());
+        QVERIFY(backups(source).isEmpty());
+    }
+
+    void chromeExitDoesNotBypassExternalChangeProtection()
+    {
+        QTemporaryDir directory;
+        const QString source = directory.filePath("Bookmarks");
+        QVERIFY(writeSample(source));
+        BookmarkDocument document([] { return false; });
+        QVERIFY(document.load(source));
+        QVERIFY(document.rename(document.nodeById("10"), "local edit"));
+        const QByteArray external = "changed by Chrome on exit";
+        QVERIFY(writeBytes(source, external));
+        QString error;
+        QVERIFY(!document.save({}, true, &error));
+        QCOMPARE(readBytes(source), external);
+        QVERIFY(document.isDirty());
+        QVERIFY2(document.save(directory.filePath("copy.json"), true, &error), qPrintable(error));
+        QCOMPARE(readBytes(source), external);
+    }
+
     void failedSavePreservesPathDirtyAndBaseline()
     {
         QTemporaryDir dir;

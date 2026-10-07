@@ -5,16 +5,27 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
+#include <QDir>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QFile>
+#include <QFileDialog>
+#include <QHostAddress>
+#include <QInputDialog>
 #include <QLineEdit>
 #include <QMimeData>
+#include <QMessageBox>
+#include <QPainter>
 #include <QStandardPaths>
+#include <QStyleOptionViewItem>
 #include <QTableWidget>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 #include <QTreeWidgetItemIterator>
 #include <memory>
 
@@ -52,6 +63,7 @@ private slots:
     void initTestCase()
     {
         QStandardPaths::setTestModeEnabled(true);
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
         QVERIFY(directory_.isValid());
     }
 
@@ -129,6 +141,192 @@ private slots:
         loader->iconReady(QStringLiteral("https://alpha.example/"), favicon);
         QCOMPARE(icons_->count(), 0);
         QCOMPARE(table->rowCount(), 0);
+    }
+
+    void savesReorderedBookmarksFromIconView()
+    {
+        auto mime = drag({QStringLiteral("13"), QStringLiteral("10")});
+        QVERIFY(icons_->handleDrop(mime.get(), QStringLiteral("1"), 2, true));
+        QTRY_COMPARE(visibleIds(), QStringList({QStringLiteral("11"), QStringLiteral("10"),
+            QStringLiteral("13"), QStringLiteral("12"), QStringLiteral("14")}));
+        const auto expected = visibleIds();
+        QVERIFY(window_->windowTitle().endsWith(QStringLiteral(" *")));
+        auto* save = window_->findChild<QAction*>(QStringLiteral("saveBookmarks"));
+        QVERIFY(save);
+        QCOMPARE(save->shortcut(), QKeySequence(QKeySequence::Save));
+        save->trigger();
+        QVERIFY(!window_->windowTitle().endsWith(QStringLiteral(" *")));
+        BookmarkDocument saved;
+        QVERIFY(saved.load(path_));
+        QStringList actual;
+        for (const auto& child : saved.nodeById(QStringLiteral("1"))->children) actual.append(child->id());
+        QCOMPARE(actual, expected);
+        QVERIFY(!QDir(directory_.path()).entryList({QStringLiteral("Bookmarks.json.backup-*")}).isEmpty());
+        QVERIFY(window_->loadBookmarks(path_));
+        QCOMPARE(visibleIds(), expected);
+    }
+
+    void failedSaveCanRecoverToIndependentCopy()
+    {
+        auto mime = drag({QStringLiteral("13"), QStringLiteral("10")});
+        QVERIFY(icons_->handleDrop(mime.get(), QStringLiteral("1"), 2, true));
+        QTRY_COMPARE(visibleIds().first(), QStringLiteral("11"));
+        const auto expected = visibleIds();
+        const QByteArray external = "external changes must survive";
+        QFile source(path_);
+        QVERIFY(source.open(QIODevice::WriteOnly));
+        QCOMPARE(source.write(external), external.size());
+        source.close();
+        const QString copy = directory_.filePath(QStringLiteral("Recovered.json"));
+        bool offeredSaveAs = false;
+        bool selectedCopy = false;
+        int attempts = 0;
+        QTimer responder;
+        connect(&responder, &QTimer::timeout, this, [&] {
+            auto* modal = QApplication::activeModalWidget();
+            if (++attempts > 200) {
+                if (auto* dialog = qobject_cast<QDialog*>(modal)) dialog->reject();
+                return;
+            }
+            if (auto* message = qobject_cast<QMessageBox*>(modal)) {
+                for (auto* button : message->buttons()) {
+                    if (button->text().startsWith(QStringLiteral("另存为副本"))) {
+                        offeredSaveAs = true;
+                        button->click();
+                        return;
+                    }
+                }
+                message->reject();
+            } else if (auto* dialog = qobject_cast<QFileDialog*>(modal); dialog && !selectedCopy) {
+                dialog->setDirectory(directory_.path());
+                selectedCopy = true;
+                QTimer::singleShot(50, dialog, [dialog, copy] {
+                    auto* filename = dialog->findChild<QLineEdit*>(QStringLiteral("fileNameEdit"));
+                    if (filename) filename->setText(copy);
+                    QMetaObject::invokeMethod(dialog, "accept");
+                });
+            }
+        });
+        responder.start(10);
+        window_->findChild<QAction*>(QStringLiteral("saveBookmarks"))->trigger();
+        responder.stop();
+        QVERIFY(offeredSaveAs);
+        QVERIFY(selectedCopy);
+        QVERIFY(attempts <= 200);
+        QVERIFY(!window_->windowTitle().endsWith(QStringLiteral(" *")));
+        QVERIFY(source.open(QIODevice::ReadOnly));
+        QCOMPARE(source.readAll(), external);
+        BookmarkDocument recovered;
+        QVERIFY(recovered.load(copy));
+        QStringList actual;
+        for (const auto& child : recovered.nodeById("1")->children) actual.append(child->id());
+        QCOMPARE(actual, expected);
+    }
+
+    void healthBadgeIsPaintedBelowTheLogo()
+    {
+        auto* item = icons_->item(0);
+        QStyleOptionViewItem option;
+        option.initFrom(icons_);
+        option.rect = QRect(0, 0, 120, 128);
+        option.decorationSize = icons_->iconSize();
+        option.decorationPosition = QStyleOptionViewItem::Top;
+        const auto render = [&] {
+            QImage image(option.rect.size(), QImage::Format_ARGB32);
+            image.fill(Qt::white);
+            QPainter painter(&image);
+            icons_->itemDelegate()->paint(&painter, option, icons_->model()->index(0, 0));
+            painter.end();
+            return image;
+        };
+        item->setData(BookmarkIconView::HealthTextRole, QString());
+        const auto withoutBadge = render();
+        item->setData(BookmarkIconView::HealthTextRole, QStringLiteral("正常 · 200"));
+        item->setData(BookmarkIconView::HealthColorRole, QColor("#15803d"));
+        const auto withBadge = render();
+        QCOMPARE(withoutBadge.copy(0, 0, 120, 104), withBadge.copy(0, 0, 120, 104));
+        QVERIFY(withoutBadge.copy(0, 104, 120, 24) != withBadge.copy(0, 104, 120, 24));
+    }
+
+    void healthResultsAreVisibleWithoutReplacingIconsOrSelection()
+    {
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        connect(&server, &QTcpServer::newConnection, this, [&server] {
+            while (auto* socket = server.nextPendingConnection()) {
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+                connect(socket, &QTcpSocket::readyRead, socket, [socket] {
+                    const QByteArray request = socket->property("request").toByteArray() + socket->readAll();
+                    socket->setProperty("request", request);
+                    if (!request.contains("\r\n\r\n")) return;
+                    socket->disconnect(socket, &QTcpSocket::readyRead, nullptr, nullptr);
+                    const QByteArray path = request.split(' ').value(1);
+                    const QByteArray status = path == "/missing" ? "404 Not Found"
+                        : (path == "/restricted" ? "403 Forbidden" : "200 OK");
+                    QTimer::singleShot(40, socket, [socket, status] {
+                        socket->write("HTTP/1.1 " + status + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        socket->disconnectFromHost();
+                    });
+                });
+            }
+        });
+        const QString base = QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort());
+        BookmarkDocument document;
+        QVERIFY(document.load(path_));
+        QVERIFY(document.updateUrl(document.nodeById("10"), base + QStringLiteral("/ok")));
+        QVERIFY(document.updateUrl(document.nodeById("12"), base + QStringLiteral("/missing")));
+        QVERIFY(document.updateUrl(document.nodeById("13"), base + QStringLiteral("/restricted")));
+        QVERIFY(document.save({}, false));
+        QVERIFY(window_->loadBookmarks(path_));
+        window_->findChild<QCheckBox*>()->setChecked(false);
+        auto* table = window_->findChild<QTableWidget*>(QStringLiteral("bookmarkDetails"));
+        auto* first = icons_->item(0);
+        QCOMPARE(first->data(BookmarkIconView::HealthTextRole).toString(), QStringLiteral("未检测"));
+        first->setSelected(true);
+        icons_->item(2)->setSelected(true);
+        table->item(3, 0)->setCheckState(Qt::Checked);
+        QPixmap pixmap(48, 48);
+        pixmap.fill(Qt::magenta);
+        const QIcon favicon(pixmap);
+        auto* loader = window_->findChild<FaviconLoader*>();
+        loader->iconReady(FaviconLoader::siteKey(base), favicon);
+        QVERIFY(QMetaObject::invokeMethod(window_.get(), "checkUrls"));
+        QCOMPARE(first->data(BookmarkIconView::HealthTextRole).toString(), QStringLiteral("检测中…"));
+        QTRY_COMPARE(table->item(0, 6)->text(), QStringLiteral("200"));
+        QTRY_COMPARE(table->item(2, 6)->text(), QStringLiteral("404"));
+        QTRY_COMPARE(table->item(3, 6)->text(), QStringLiteral("403"));
+        QCOMPARE(icons_->item(0), first);
+        QVERIFY(first->data(BookmarkIconView::HealthTextRole).toString().contains(QStringLiteral("200")));
+        QCOMPARE(first->data(BookmarkIconView::HealthColorRole).value<QColor>(), QColor("#15803d"));
+        QCOMPARE(icons_->item(2)->data(BookmarkIconView::HealthColorRole).value<QColor>(), QColor("#dc2626"));
+        QCOMPARE(icons_->item(3)->data(BookmarkIconView::HealthColorRole).value<QColor>(), QColor("#b45309"));
+        QVERIFY(icons_->item(1)->data(BookmarkIconView::HealthTextRole).toString().isEmpty());
+        QCOMPARE(first->icon().cacheKey(), favicon.cacheKey());
+        QCOMPARE(icons_->selectedNodeIds(), QStringList({QStringLiteral("10"), QStringLiteral("12")}));
+        QCOMPARE(table->item(3, 0)->checkState(), Qt::Checked);
+        QVERIFY(!window_->windowTitle().endsWith(QStringLiteral(" *")));
+        loader->iconReady(FaviconLoader::siteKey(base), favicon);
+        QVERIFY(icons_->item(2)->data(BookmarkIconView::HealthTextRole).toString().contains(QStringLiteral("404")));
+        QVERIFY(QMetaObject::invokeMethod(window_.get(), "refreshList"));
+        QVERIFY(icons_->item(2)->data(BookmarkIconView::HealthTextRole).toString().contains(QStringLiteral("404")));
+        QVERIFY(QMetaObject::invokeMethod(window_.get(), "checkUrls"));
+        QCOMPARE(icons_->item(2)->data(BookmarkIconView::HealthTextRole).toString(), QStringLiteral("检测中…"));
+        QVERIFY(table->item(2, 6)->text().isEmpty());
+        QTRY_COMPARE(table->item(0, 6)->text(), QStringLiteral("200"));
+        QTRY_COMPARE(table->item(2, 6)->text(), QStringLiteral("404"));
+        QTRY_COMPARE(table->item(3, 6)->text(), QStringLiteral("403"));
+        icons_->clearSelection();
+        icons_->item(0)->setSelected(true);
+        QTimer::singleShot(0, this, [&] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            if (dialog) {
+                dialog->setTextValue(base + QStringLiteral("/changed"));
+                dialog->accept();
+            }
+        });
+        QVERIFY(QMetaObject::invokeMethod(window_.get(), "editSelectedUrl"));
+        QCOMPARE(icons_->item(0)->data(BookmarkIconView::HealthTextRole).toString(), QStringLiteral("未检测"));
+        QVERIFY(icons_->item(2)->data(BookmarkIconView::HealthTextRole).toString().contains(QStringLiteral("404")));
     }
 
     void doubleClickFolder()
